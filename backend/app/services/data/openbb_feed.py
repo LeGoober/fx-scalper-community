@@ -183,12 +183,22 @@ def _s(value: Any) -> str | None:
 def calendar(days_back: int = 1, days_ahead: int = 7, provider: str | None = None, min_importance: int = 3) -> dict:
     chosen = _calendar_provider(provider)
     today = date.today()
-    fetched = (_forexfactory() if chosen == "forexfactory"
-               else _openbb_calendar(chosen, today - timedelta(days=days_back), today + timedelta(days=days_ahead)))
+    fallback_reason = None
+    if chosen == "forexfactory":
+        fetched = _forexfactory()
+    else:
+        try:
+            fetched = _openbb_calendar(chosen, today - timedelta(days=days_back), today + timedelta(days=days_ahead))
+        except Exception as exc:  # e.g. FMP free tier: 402 "Restricted Endpoint"
+            if provider:  # explicitly requested: surface the error
+                raise
+            fallback_reason = f"{chosen} unavailable ({str(exc).strip().splitlines()[-1][:160]}); used forexfactory"
+            chosen, fetched = "forexfactory", _forexfactory()
     _store_events(fetched)
     lo = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
     hi = int((datetime.now(timezone.utc) + timedelta(days=days_ahead)).timestamp())
-    return {"provider": chosen, "fetched": len(fetched), "events": events_between(lo, hi, min_importance)}
+    return {"provider": chosen, "fallback_reason": fallback_reason, "fetched": len(fetched),
+            "events": events_between(lo, hi, min_importance)}
 
 
 def events_between(start_ts: int, end_ts: int, min_importance: int = 3,

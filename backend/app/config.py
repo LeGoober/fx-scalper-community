@@ -7,6 +7,7 @@ Values are read at call time (not cached) so key updates made through
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,7 +23,7 @@ DEFAULT_DERIV_REST_URL = "https://api.derivws.com"
 # Deriv's current API. The legacy wss://ws.derivws.com/websockets/v3 now answers HTTP 520.
 # Authenticated sessions use OTP URLs: .../ws/demo?otp=... or .../ws/real?otp=...
 DEFAULT_DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
-DEFAULT_DERIV_APP_ID = "1089"  # Deriv's public test app id
+DEFAULT_DERIV_APP_ID = "1089"  # legacy public test id: fine for public market data, rejected for PAT auth
 
 
 def env(name: str, default: str = "", *aliases: str) -> str:
@@ -66,9 +67,14 @@ def transcripts_dir() -> Path:
 
 
 # Deriv ----------------------------------------------------------------------
+def valid_app_id(value: str) -> bool:
+    """Legacy app ids are numeric; new-API PAT app ids may contain letters and dashes."""
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value or ""))
+
+
 def deriv_app_id() -> str:
     value = env("COMMUNITY_DERIV_APP_ID", DEFAULT_DERIV_APP_ID, "DERIV_APP_ID")
-    return value if value.isdigit() else DEFAULT_DERIV_APP_ID
+    return value if valid_app_id(value) else DEFAULT_DERIV_APP_ID
 
 
 def deriv_token() -> str:

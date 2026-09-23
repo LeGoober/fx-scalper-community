@@ -77,6 +77,31 @@ def test_is_virtual_signals(endpoint, account, expected):
     assert c.is_virtual is expected
 
 
+@pytest.mark.parametrize("value,ok", [("1089", True), ("my-pat-app_2", True), ("abc123", True),
+                                      ("", False), ("bad id", False), ("x" * 65, False), ("a/b", False)])
+def test_app_ids_accept_new_alphanumeric_pat_ids(value, ok, monkeypatch):
+    from app import config
+    assert config.valid_app_id(value) is ok
+    monkeypatch.setenv("COMMUNITY_DERIV_APP_ID", value)
+    assert config.deriv_app_id() == (value if ok else config.DEFAULT_DERIV_APP_ID)
+    assert DerivClient(token="").app_id == config.deriv_app_id()
+
+
+def test_calendar_falls_back_when_keyed_provider_is_restricted(monkeypatch):
+    from app.services.data import openbb_feed as feed
+    monkeypatch.setenv("FMP_API_KEY", "free-tier")
+
+    def restricted(*a, **k):
+        raise RuntimeError("Unauthorized FMP request -> 402 -> Restricted Endpoint")
+    monkeypatch.setattr(feed, "_openbb_calendar", restricted)
+    monkeypatch.setattr(feed, "_forexfactory", lambda: [{"ts": 1_790_000_000, "currency": "USD", "title": "NFP",
+                                                         "importance": 3, "source": "forexfactory"}])
+    out = feed.calendar(days_back=3650, days_ahead=3650)
+    assert out["provider"] == "forexfactory" and "402" in out["fallback_reason"] and out["fetched"] == 1
+    with pytest.raises(RuntimeError):
+        feed.calendar(provider="fmp")  # an explicit request surfaces the error
+
+
 def test_legacy_rule_scenarios_unchanged():
     summary = core.backtest_summary(core.DEFAULT_STATE)
     assert summary["scenario_passes"] == summary["scenario_total"] == 3

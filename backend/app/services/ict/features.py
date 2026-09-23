@@ -151,6 +151,18 @@ class SessionLevels:
     asian_high: float | None = None
     asian_low: float | None = None
     day: str | None = None
+    midnight_open: float | None = None  # NY 00:00 opening price, known from midnight until the next 17:00 roll
+
+
+PIP_SIZE = {"frxUSDJPY": 0.01, "frxEURJPY": 0.01, "frxGBPJPY": 0.01, "frxAUDJPY": 0.01, "frxNZDJPY": 0.01,
+            "frxXAUUSD": 0.1}
+
+
+def pip_size(symbol: str) -> float:
+    """Forex pip (0.0001, or 0.01 for JPY pairs); gold 0.1; OTC indices 1 point."""
+    if symbol in PIP_SIZE:
+        return PIP_SIZE[symbol]
+    return 1.0 if symbol.startswith("OTC_") else 0.0001
 
 
 def session_levels(bars: Bars) -> list[SessionLevels]:
@@ -162,6 +174,7 @@ def session_levels(bars: Bars) -> list[SessionLevels]:
     asian = {"h": None, "l": None}
     asian_done = {"h": None, "l": None}
     asian_window = KILLZONES_NY["asian"]
+    midnight_open: float | None = None
     for i in range(len(bars)):
         d = ny_trading_day(bars.t[i])
         if d != day:
@@ -171,6 +184,9 @@ def session_levels(bars: Bars) -> list[SessionLevels]:
             cur = {"h": bars.h[i], "l": bars.l[i], "o": bars.o[i], "c": bars.c[i]}
             asian = {"h": None, "l": None}
             asian_done = {"h": None, "l": None}
+            midnight_open = None  # the new trading day starts at 17:00; its midnight has not happened yet
+        if midnight_open is None and ny_time(bars.t[i]).hour < 17 and ny_time(bars.t[i]).strftime("%Y-%m-%d") == d:
+            midnight_open = bars.o[i]  # first bar at/after 00:00 NY of this trading day
         else:
             cur["h"], cur["l"], cur["c"] = max(cur["h"], bars.h[i]), min(cur["l"], bars.l[i]), bars.c[i]
         if in_window(bars.t[i], asian_window):
@@ -178,7 +194,8 @@ def session_levels(bars: Bars) -> list[SessionLevels]:
             asian["l"] = bars.l[i] if asian["l"] is None else min(asian["l"], bars.l[i])
         elif asian["h"] is not None and asian_done["h"] is None:
             asian_done = dict(asian)  # Asian range becomes a known level only after the session closes
-        out.append(SessionLevels(prev["h"], prev["l"], prev["c"], prev["o"], asian_done["h"], asian_done["l"], d))
+        out.append(SessionLevels(prev["h"], prev["l"], prev["c"], prev["o"], asian_done["h"], asian_done["l"], d,
+                                 midnight_open))
     return out
 
 

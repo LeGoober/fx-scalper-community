@@ -74,3 +74,9 @@ flowchart TD
 | 10 | **Daily draw on liquidity agrees** | jev | Trade only toward the daily draw on liquidity. Jev judges it from the daily facts, including whether the previous day high/low has already traded today. Fallback rule (v2): the opposing previous-day extreme must still be resting, untaken today. | [2022 ICT Mentorship Episode 12 @7:50](https://www.youtube.com/watch?v=8GkQfdAXZP0&t=470s)<br>[2022 ICT Mentorship Episode 11 @13:44](https://www.youtube.com/watch?v=Sqw2bww93Zo&t=824s) |
 | 11 | **High-impact news nearby (flag)** | code (flag) | Flags setups within ±15 min of high-impact news for the pair's currencies. ICT does not avoid news outright, so this flags rather than rejects. | [2022 ICT Mentorship Episode 17 @25:23](https://www.youtube.com/watch?v=5WIqHJDQ_p4&t=1523s) |
 | 12 | **Holistic model check (flag)** | jev (flag) | A sanity judgment over the whole setup; it only flags, so it can be measured before it is trusted. | — |
+
+## Changelog
+
+- v1 (2026-09-23): initial draft from keyword retrieval over episodes 1-21; Jev-tagged digest refinement pending.
+- v2 (2026-09-23): premium/discount measured on the previous-day dealing range (the daily range cited in Ep. 10 @4:09) instead of the displacement leg.
+- v2 (2026-09-23): htf_draw fallback uses the untaken opposing previous-day extreme (v1's 'follow the previous close' contradicted the daily-discount rule); Jev now sees whether PDH/PDL already traded today.

@@ -61,6 +61,8 @@ class ContractSpec(BaseModel):
 class ExecutionSpec(BaseModel):
     entry: Literal["fvg_ce", "fvg_edge"] = "fvg_ce"
     stop_buffer_atr: float = 0.1
+    stop_buffer_pips: float | None = None     # overrides the ATR buffer when set (ICT: 5 pips, 10 when new)
+    entry_expiry_ny: str | None = None        # cancel an unfilled entry at this NY time (ICT: 11:30)
     target: TargetSpec = Field(default_factory=TargetSpec)
     entry_window_bars: int = 20
     max_trades_per_day: int = 2
@@ -81,6 +83,7 @@ class StrategySchema(BaseModel):
     scan: dict = Field(default_factory=dict)
     nodes: list[NodeSpec]
     execution: ExecutionSpec = Field(default_factory=ExecutionSpec)
+    execution_citations: list[Citation] = Field(default_factory=list)
     jev_model_pin: str | None = None
     sources: list[dict] = Field(default_factory=list)
     authored_by: str = ""
@@ -185,12 +188,24 @@ class Evaluation:
         return self.plan is not None and all(r.passed for r in self.results if not r.id.startswith("flag:"))
 
 
+def entry_deadline(armed_epoch: int, ex: ExecutionSpec, granularity: int) -> int:
+    """Last epoch an entry may fill: entry_window_bars, capped by entry_expiry_ny on the armed day."""
+    deadline = armed_epoch + granularity * ex.entry_window_bars
+    if ex.entry_expiry_ny:
+        h, m = (int(x) for x in ex.entry_expiry_ny.split(":"))
+        armed = F.ny_time(armed_epoch)
+        cut = armed.replace(hour=h, minute=m, second=0, microsecond=0)
+        deadline = min(deadline, int(cut.timestamp())) if armed < cut else armed_epoch  # armed after cut: no entry
+    return deadline
+
+
 def build_plan(setup: F.Setup, ctx: Context, ex: ExecutionSpec) -> Plan | None:
     long = setup.direction == "long"
     fvg = setup.fvg
     entry = fvg.ce if ex.entry == "fvg_ce" else (fvg.top if long else fvg.bottom)
     a = ctx.atr[setup.armed_at]
-    stop = setup.sweep_extreme - ex.stop_buffer_atr * a if long else setup.sweep_extreme + ex.stop_buffer_atr * a
+    buffer = ex.stop_buffer_pips * F.pip_size(ctx.symbol) if ex.stop_buffer_pips is not None else ex.stop_buffer_atr * a
+    stop = setup.sweep_extreme - buffer if long else setup.sweep_extreme + buffer
     risk = abs(entry - stop)
     if risk <= 0:
         return None
@@ -285,6 +300,21 @@ def _premium_discount(setup, ctx, plan, p):
 def _min_rr(setup, ctx, plan, p):
     need = p.get("min_rr", 1.5)
     return NodeResult("min_rr", "code", plan.rr >= need, plan.rr, f"R:R {plan.rr:.2f} to {plan.target_name}")
+
+
+@detector("opening_price")
+def _opening_price(setup, ctx, plan, p):
+    """ICT daily bias vs the opening price: shorts sell above the NY midnight open (premium of the day),
+    longs buy below it (Ep. 10 @17:59, Ep. 16 @15:24)."""
+    lv = ctx.levels[setup.armed_at] if ctx.levels else None
+    if lv is None or lv.midnight_open is None:
+        return NodeResult("opening_price", "code", p.get("pass_if_unknown", False), None,
+                          "midnight open not yet known (setup before 00:00 NY)")
+    long = setup.direction == "long"
+    ok = plan.entry < lv.midnight_open if long else plan.entry > lv.midnight_open
+    side = "below" if plan.entry < lv.midnight_open else "above"
+    return NodeResult("opening_price", "code", ok, round(plan.entry - lv.midnight_open, 6),
+                      f"entry {side} the NY midnight open")
 
 
 @detector("cost_budget")

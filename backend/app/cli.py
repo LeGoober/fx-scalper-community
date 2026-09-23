@@ -76,6 +76,13 @@ def strategy_diagram(args: argparse.Namespace) -> int:
                                 f"(https://www.youtube.com/watch?v={c.video_id}&t={c.t}s)" for c in n.citations)
             body.append(f"| {i} | **{n.label}** | {n.kind}{' (' + n.on_fail + ')' if n.on_fail == 'flag' else ''} "
                         f"| {n.description} | {cites or '—'} |")
+        if schema.execution_citations:
+            body += ["", "## Execution rules — ICT sources", ""]
+            body += [f"- [{c.title or c.video_id} @{c.t // 60}:{c.t % 60:02d}]"
+                     f"(https://www.youtube.com/watch?v={c.video_id}&t={c.t}s): {c.note}"
+                     for c in schema.execution_citations]
+        if schema.changelog:
+            body += ["", "## Changelog", ""] + [f"- {c}" for c in schema.changelog]
         md.write_text("\n".join(body) + "\n", encoding="utf-8")
         print("wrote", md)
     return 0

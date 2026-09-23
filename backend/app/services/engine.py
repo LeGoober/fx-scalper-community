@@ -292,7 +292,7 @@ class LiveEngine:
         day = F.ny_trading_day(bars.t[-1])
         if st.position or st.pending or st.trades_today.get(day, 0) >= ex.max_trades_per_day:
             return
-        expires = bars.t[-1] + self.schema.entry_granularity * (ex.entry_window_bars + 1)
+        expires = S.entry_deadline(bars.t[-1] + self.schema.entry_granularity, ex, self.schema.entry_granularity)
         st.pending.append(Pending(f"po-{uuid.uuid4().hex[:8]}", st.symbol, signal_id, ev.plan, expires, bars.t[-1]))
 
     # --------------------------------------------------------- execution

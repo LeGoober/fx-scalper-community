@@ -176,7 +176,10 @@ def _multiplier(s: F.Setup, plan: S.Plan, bars: F.Bars, ex: S.ExecutionSpec, cos
     long = s.direction == "long"
     n = len(bars)
     fill_i = fill_px = None
+    deadline = S.entry_deadline(bars.t[s.armed_at], ex, bars.granularity)
     for j in range(s.armed_at + 1, min(n, s.armed_at + 1 + ex.entry_window_bars)):
+        if bars.t[j] > deadline:
+            break
         if (long and bars.h[j] >= plan.target) or (not long and bars.l[j] <= plan.target):
             if not ((long and bars.l[j] <= plan.entry) or (not long and bars.h[j] >= plan.entry)):
                 return {"missed": True}  # ran to target without us

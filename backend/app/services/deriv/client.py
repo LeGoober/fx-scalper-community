@@ -87,7 +87,7 @@ class DerivClient:
         account_id: str = "",
     ) -> None:
         raw_app_id = str(app_id if app_id is not None else config.deriv_app_id()).strip()
-        self.app_id = raw_app_id if raw_app_id.isdigit() else config.DEFAULT_DERIV_APP_ID
+        self.app_id = raw_app_id if config.valid_app_id(raw_app_id) else config.DEFAULT_DERIV_APP_ID
         self.token = normalize_token(config.deriv_token() if token is None else token)
         self.ws_url = ws_url or config.deriv_ws_url()
         self.rest_url = (rest_url or config.deriv_rest_url()).rstrip("/")
@@ -365,6 +365,11 @@ class DerivClient:
         if response.status_code >= 400:
             errors = data.get("errors") if isinstance(data, dict) else None
             message = errors[0].get("message") if isinstance(errors, list) and errors else None
+            if not message and response.text and len(response.text) < 200:
+                message = response.text.strip()  # e.g. "Invalid application"
+            if message == "Invalid application":
+                message += (f" (app id {self.app_id!r}). PAT tokens need an app id registered as a PAT app at "
+                            "developers.deriv.com; the legacy test id 1089 is rejected.")
             raise DerivError(message or f"Deriv REST error {response.status_code} for {path}")
         return data if isinstance(data, dict) else {}
 

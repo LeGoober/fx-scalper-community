@@ -125,7 +125,8 @@ export const market = {
   openbbHtf: (pair: string, o: { interval?: string; days?: number; provider?: string } = {}) =>
     get<{ pair: string; interval: string; source: string; candles: Candle[] }>(`/market/openbb/htf/${pair}${qs(o)}`),
   calendar: (o: { days_ahead?: number; days_back?: number; provider?: string; min_importance?: number } = {}) =>
-    get<{ provider: string; fetched: number; events: EconEvent[] }>(`/market/openbb/calendar${qs(o)}`),
+    get<{ provider: string; fallback_reason: string | null; fetched: number; events: EconEvent[] }>(
+      `/market/openbb/calendar${qs(o)}`),
   news: (o: { query?: string; limit?: number; provider?: string } = {}) =>
     get<{ provider: string; items: { date: string; title: string; url: string; source: string }[] }>(
       `/market/openbb/news${qs(o)}`),

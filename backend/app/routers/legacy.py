@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
-from app import db, events, secrets_store
+from app import config, db, events, secrets_store
 from app.legacy import core, state as legacy_state
 from app.services import risk
 from app.services.deriv.client import DerivClient, DerivError
@@ -50,7 +50,7 @@ def update_config(payload: dict = Body(default_factory=dict)) -> dict:
     if token:
         secrets_store.set_secret("deriv_token", token)
     app_id = str(payload.pop("deriv_app_id", "") or "").strip()
-    if app_id.isdigit():
+    if config.valid_app_id(app_id):
         secrets_store.set_secret("deriv_app_id", app_id)
     state = legacy_state.load()
     state["settings"] = core.normalize_settings(payload, state.get("settings", {}))

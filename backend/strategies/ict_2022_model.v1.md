@@ -74,3 +74,7 @@ flowchart TD
 | 10 | **Daily draw on liquidity agrees** | jev | Trade only in the direction of the daily draw. Fallback rule: follow the previous day's close direction. | [2022 ICT Mentorship Episode 12 @7:50](https://www.youtube.com/watch?v=8GkQfdAXZP0&t=470s)<br>[2022 ICT Mentorship Episode 11 @13:44](https://www.youtube.com/watch?v=Sqw2bww93Zo&t=824s) |
 | 11 | **High-impact news nearby (flag)** | code (flag) | Flags setups within ±15 min of high-impact news for the pair's currencies. ICT does not avoid news outright, so this flags rather than rejects. | [2022 ICT Mentorship Episode 17 @25:23](https://www.youtube.com/watch?v=5WIqHJDQ_p4&t=1523s) |
 | 12 | **Holistic model check (flag)** | jev (flag) | A sanity judgment over the whole setup; it only flags, so it can be measured before it is trusted. | — |
+
+## Changelog
+
+- v1 (2026-09-23): initial draft from keyword retrieval over episodes 1-21; Jev-tagged digest refinement pending.
