@@ -30,9 +30,18 @@ from app.services.ict import features as F
 from app.services.ict import strategy as S
 from app.services.ict.scanner import Scanner
 
-# Round-trip cost estimates in price units (spread + commission). Tune per your Deriv fills.
-DEFAULT_COST = {"frxEURUSD": 0.00012, "frxGBPUSD": 0.00018, "frxUSDJPY": 0.018, "frxXAUUSD": 0.45,
-                "OTC_NDX": 2.0, "OTC_SPC": 0.6, "OTC_DJI": 4.0}
+# Round-trip cost fallback in price units, measured from Deriv multiplier quotes (2 bps of notional,
+# 2026-09-23). POST /api/market/calibrate refreshes the live profile, which takes precedence.
+DEFAULT_COST = {"frxEURUSD": 0.00023, "frxGBPUSD": 0.00027, "frxUSDJPY": 0.03, "frxXAUUSD": 0.77,
+                "OTC_NDX": 6.0, "OTC_SPC": 1.3, "OTC_DJI": 9.0}
+
+
+def cost_for(symbol: str) -> float:
+    from app.services.deriv import profile
+    measured = profile.get(symbol).get("cost_price")
+    return float(measured) if measured else DEFAULT_COST.get(symbol, 0.0)
+
+
 JEV_CONCURRENCY = 8
 
 
@@ -113,8 +122,12 @@ async def evaluate_all(runtime: S.Runtime, setups: list[F.Setup], ctx: S.Context
     return out
 
 
+FOREX_ZONES = ["london", "ny_am", "ny_lunch", "ny_pm", "asian"]
+INDEX_ZONES = ["ny_am_index", "london", "ny_lunch", "ny_pm", "asian"]
+
+
 def simulate(evals: list[S.Evaluation], bars: F.Bars, schema: S.StrategySchema, cost: float,
-             session_exit: bool, funnel: dict | None = None) -> list[dict]:
+             session_exit: bool, funnel: dict | None = None, symbol: str = "") -> list[dict]:
     ex = schema.execution
     trades: list[dict] = []
     busy_until = -1
@@ -145,7 +158,8 @@ def simulate(evals: list[S.Evaluation], bars: F.Bars, schema: S.StrategySchema, 
         funnel["filled"] += 1
         per_day[day] = per_day.get(day, 0) + 1
         busy_until = trade.pop("_exit_index")
-        trade.update({"direction": s.direction, "killzone": F.killzone_of(bars.t[s.mss_index]) or "outside",
+        zone_names = INDEX_ZONES if symbol.startswith("OTC_") else FOREX_ZONES
+        trade.update({"direction": s.direction, "killzone": F.killzone_of(bars.t[s.mss_index], zone_names) or "outside",
                       "liquidity": s.sweep_level_name, "rr_planned": plan.rr, "target_name": plan.target_name,
                       "flags": ev.flags, "nodes": {r.id: r.value for r in ev.results},
                       "side": "BUY" if long else "SELL"})
@@ -259,14 +273,23 @@ async def run(params: BacktestParams, progress: Callable[[dict], None] | None = 
     setups = _dedupe(await asyncio.to_thread(scanner.run))
     if progress:
         progress({"stage": "scanned", "bars": len(bars), "setups": len(setups)})
-    cost = params.cost if params.cost is not None else DEFAULT_COST.get(params.symbol, 0.0)
+    cost = params.cost if params.cost is not None else cost_for(params.symbol)
+    from app.services.deriv import profile
+    prof = profile.get(params.symbol)
+    contract = schema.execution.contract.type
+    warnings = []
+    if prof and not (prof.get("executable") or {}).get(contract, True):
+        warnings.append(f"Deriv does not offer {contract} contracts on {params.symbol} (options account API); "
+                        "results are hypothetical. Use a rise_fall variant to test what is executable.")
+    if contract == "rise_fall" and (prof.get("rise_fall") or {}).get("payout_r"):
+        schema.execution.contract.rise_fall_payout = prof["rise_fall"]["payout_r"]
     modes = ["code", "jev"] if params.mode == "compare" else [params.mode]
     results = {}
     for mode in modes:
         runtime = S.Runtime(schema, mode, cost=cost)
         evals = await evaluate_all(runtime, setups, ctx, progress)
         funnel: dict = {"setups": len(setups)}
-        trades = simulate(evals, bars, schema, cost, params.session_exit, funnel)
+        trades = simulate(evals, bars, schema, cost, params.session_exit, funnel, params.symbol)
         rs = [t["r"] for t in trades]
         results[mode] = {
             "summary": metrics.summarise(rs),
@@ -284,7 +307,7 @@ async def run(params: BacktestParams, progress: Callable[[dict], None] | None = 
                          "overrides": params.extra.get("overrides")},
             "symbol": params.symbol, "granularity": schema.entry_granularity, "bars": len(bars),
             "from": _iso(bars.t[0]), "to": _iso(bars.t[-1]), "setups": len(setups), "cost_price": cost,
-            "contract": schema.execution.contract.type, "results": results,
+            "contract": schema.execution.contract.type, "warnings": warnings, "results": results,
             "elapsed_s": round(time.perf_counter() - started, 2)}
 
 

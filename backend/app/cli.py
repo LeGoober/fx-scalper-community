@@ -96,6 +96,19 @@ def backtest_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def openapi_export(args: argparse.Namespace) -> int:
+    from app import config
+    from app.main import app
+    out = config.PROJECT_DIR / "docs" / "openapi.json"
+    out.parent.mkdir(exist_ok=True)
+    spec = app.openapi()
+    spec.setdefault("x-websockets", {})["/api/stream"] = {
+        "description": "Live event stream; messages {type, ts, level, message, data}. See ui/src/api.ts."}
+    out.write_text(json.dumps(spec, indent=1, ensure_ascii=False), encoding="utf-8")
+    print(f"wrote {out} ({len(spec['paths'])} paths)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     from app.services.transcripts.extract import DEFAULT_PLAYLIST
     parser = argparse.ArgumentParser(prog="python -m app.cli")
@@ -133,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     btr.add_argument("--mode", choices=["code", "jev", "compare"], default="code")
     btr.add_argument("--overrides", help='JSON patch, e.g. \'{"execution": {"entry": "fvg_edge"}}\'')
     btr.set_defaults(fn=backtest_run)
+
+    oa = sub.add_parser("openapi", help="Export docs/openapi.json (the UI contract)")
+    oa.set_defaults(fn=openapi_export)
 
     args = parser.parse_args(argv)
     db.init()

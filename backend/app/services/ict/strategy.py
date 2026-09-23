@@ -262,12 +262,23 @@ def _liquidity_source(setup, ctx, plan, p):
 
 @detector("premium_discount")
 def _premium_discount(setup, ctx, plan, p):
-    span = setup.leg_high - setup.leg_low or 1e-12
-    pos = (plan.entry - setup.leg_low) / span  # 0 = leg low, 1 = leg high
+    """Entry position inside a dealing range: 0 = range low, 1 = range high.
+
+    range="previous_day" (v2+): the prior NY trading day's high/low, i.e. the higher-timeframe dealing
+    range ICT applies equilibrium to (Ep. 10 @4:09). range="leg" (v1): the displacement leg itself."""
+    mode = p.get("range", "leg")
+    lo, hi, label = setup.leg_low, setup.leg_high, "leg"
+    if mode == "previous_day":
+        lv = ctx.levels[setup.armed_at] if ctx.levels else None
+        if lv is None or lv.pdh is None or lv.pdl is None:
+            return NodeResult("premium_discount", "code", True, None, "no previous-day range (not filtered)")
+        lo, hi, label = lv.pdl, lv.pdh, "previous-day range"
+    span = hi - lo or 1e-12
+    pos = (plan.entry - lo) / span
     limit = p.get("max_depth", 0.5)
     ok = pos <= limit if setup.direction == "long" else pos >= 1 - limit
     zone = "discount" if pos < 0.5 else "premium"
-    return NodeResult("premium_discount", "code", ok, round(pos, 3), f"entry at {pos:.0%} of the leg ({zone})")
+    return NodeResult("premium_discount", "code", ok, round(pos, 3), f"entry at {pos:.0%} of the {label} ({zone})")
 
 
 @detector("min_rr")
@@ -309,14 +320,29 @@ def _displacement_rule(setup, ctx, plan, p):
 
 @detector("htf_bias_rule")
 def _htf_bias_rule(setup, ctx, plan, p):
-    """Code fallback for the Jev draw-on-liquidity judgment."""
-    lv = ctx.levels[setup.armed_at] if ctx.levels else None
-    facts = F.daily_bias_facts(lv, ctx.bars.c[setup.armed_at]) if lv else {"known": False}
-    if not facts.get("known"):
+    """Code fallback for the Jev draw-on-liquidity judgment.
+
+    mode="prev_close" (v1): follow the previous day's close direction.
+    mode="unswept_opposing" (v2): the draw is the opposing previous-day extreme that has not
+    traded yet today (buy-side above for longs, sell-side below for shorts)."""
+    i = setup.armed_at
+    lv = ctx.levels[i] if ctx.levels else None
+    if lv is None or lv.pdh is None or lv.pdl is None:
         return NodeResult("htf_draw", "code", True, "unknown", "no previous-day data (not filtered)")
+    want = "buy_side_above" if setup.direction == "long" else "sell_side_below"
+    price = ctx.bars.c[i]
+    if p.get("mode", "prev_close") == "unswept_opposing":
+        hi, lo = F.today_extremes(ctx.bars, i)
+        if setup.direction == "long":
+            ok = hi < lv.pdh and price < lv.pdh
+            detail = "previous day high still resting above" if ok else "previous day high already taken or below"
+        else:
+            ok = lo > lv.pdl and price > lv.pdl
+            detail = "previous day low still resting below" if ok else "previous day low already taken or above"
+        return NodeResult("htf_draw", "code", ok, want if ok else "unclear", detail)
+    facts = F.daily_bias_facts(lv, price)
     bullish_day = facts["previous_day_closed"].startswith("bullish")
     draw = "buy_side_above" if bullish_day else "sell_side_below"
-    want = "buy_side_above" if setup.direction == "long" else "sell_side_below"
     return NodeResult("htf_draw", "code", draw == want, draw, f"previous day {facts['previous_day_closed']}")
 
 
@@ -352,7 +378,8 @@ def setup_facts(setup: F.Setup, ctx: Context, plan: Plan, granularity: int) -> d
         "fair_value_gap": f"A {'bullish' if long else 'bearish'} fair value gap was left inside the move; "
                           f"the planned entry is in the {'lower' if long else 'upper'} part of the move "
                           f"({'discount' if long else 'premium'} side)",
-        "daily_context": F.daily_bias_facts(lv, b.c[setup.armed_at]) if lv else {"known": False},
+        "daily_context": (F.daily_bias_facts(lv, b.c[setup.armed_at], F.today_extremes(b, setup.armed_at))
+                          if lv else {"known": False}),
         "planned_target": f"{plan.target_name.replace('_', ' ')}, a reward of {plan.rr:.1f} times the risk",
     }
 

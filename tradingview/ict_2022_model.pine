@@ -1,0 +1,93 @@
+//@version=6
+// ICT 2022 model: raid → structure shift → displacement → first FVG (visual check for fx-scalper)
+// Mirrors backend/app/services/ict (scanner.py + killzone node). The platform, not this script,
+// makes trading decisions. Alerts only ask the engine to re-check on fresh Deriv data.
+indicator("ICT 2022 model (fx-scalper mirror)", overlay = true, max_boxes_count = 200, max_labels_count = 200)
+
+// ── Inputs (match strategies/ict_2022_model.v1.json) ──────────────────────
+k          = input.int(2, "Swing strength (bars each side)", minval = 1)
+mssWindow  = input.int(24, "Bars allowed from raid to structure break")
+dispAtr    = input.float(1.2, "Displacement: min candle body × ATR", step = 0.1)
+fvgMinAtr  = input.float(0.05, "Min FVG size × ATR", step = 0.01)
+kzForex    = input.session("0700-1000", "NY AM killzone (forex)")
+kzIndex    = input.session("0830-1100", "NY AM killzone (indices)")
+isIndex    = input.bool(false, "Instrument is an index (use 08:30–11:00)")
+secret     = input.string("PASTE_WEBHOOK_SECRET", "Webhook secret (Settings → TradingView → Rotate)")
+
+atr14 = ta.atr(14)
+inKz  = not na(time(timeframe.period, isIndex ? kzIndex : kzForex, "America/New_York"))
+bgcolor(inKz ? color.new(color.teal, 92) : na, title = "Killzone")
+
+// ── Confirmed fractal swings (known k bars after the extreme, like the backend) ──
+ph = ta.pivothigh(high, k, k)
+pl = ta.pivotlow(low, k, k)
+var float lastHigh = na
+var float lastLow  = na
+if not na(ph)
+    lastHigh := ph
+if not na(pl)
+    lastLow := pl
+
+// ── State machine per side ────────────────────────────────────────────────
+var int   longRaidBar  = na
+var float longRef      = na
+var float longExtreme  = na
+var int   shortRaidBar = na
+var float shortRef     = na
+var float shortExtreme = na
+
+// Liquidity raids (sell-side for longs, buy-side for shorts)
+if not na(lastLow) and low < lastLow and na(longRaidBar)
+    longRaidBar := bar_index
+    longRef     := lastHigh
+    longExtreme := low
+    lastLow     := na          // swept: no longer a pool
+if not na(lastHigh) and high > lastHigh and na(shortRaidBar)
+    shortRaidBar := bar_index
+    shortRef     := lastLow
+    shortExtreme := high
+    lastHigh     := na
+
+bullFvg  = low > high[2] and (low - high[2]) > fvgMinAtr * atr14
+bearFvg  = high < low[2] and (low[2] - high) > fvgMinAtr * atr14
+bigBody  = math.abs(close - open) >= dispAtr * atr14[1]
+
+longSignal  = false
+shortSignal = false
+
+if not na(longRaidBar)
+    longExtreme := math.min(longExtreme, low)
+    if bar_index - longRaidBar > mssWindow or na(longRef)
+        longRaidBar := na
+    else if close > longRef and bullFvg and (bigBody or bigBody[1])
+        longSignal  := true
+        box.new(bar_index - 2, low, bar_index, high[2], border_color = color.green, bgcolor = color.new(color.green, 85))
+        label.new(bar_index, longExtreme, "Raid → MSS → FVG ▲", style = label.style_label_up, color = color.green,
+                  textcolor = color.white, size = size.tiny)
+        longRaidBar := na
+
+if not na(shortRaidBar)
+    shortExtreme := math.max(shortExtreme, high)
+    if bar_index - shortRaidBar > mssWindow or na(shortRef)
+        shortRaidBar := na
+    else if close < shortRef and bearFvg and (bigBody or bigBody[1])
+        shortSignal := true
+        box.new(bar_index - 2, low[2], bar_index, high, border_color = color.red, bgcolor = color.new(color.red, 85))
+        label.new(bar_index, shortExtreme, "Raid → MSS → FVG ▼", style = label.style_label_down, color = color.red,
+                  textcolor = color.white, size = size.tiny)
+        shortRaidBar := na
+
+plotshape(longSignal and inKz, "Long in killzone", shape.triangleup, location.belowbar, color.green, size = size.small)
+plotshape(shortSignal and inKz, "Short in killzone", shape.triangledown, location.abovebar, color.red, size = size.small)
+
+// ── Webhook alerts: JSON for POST /api/webhooks/tradingview ───────────────
+// Create an alert with "Any alert() function call" and set the webhook URL to your public
+// tunnel, e.g. https://<your-tunnel>/api/webhooks/tradingview (webhooks need a paid plan).
+if longSignal and inKz and barstate.isconfirmed
+    alert('{"secret":"' + secret + '","ticker":"' + syminfo.ticker + '","direction":"long","event":"ict_setup",' +
+          '"id":"' + syminfo.ticker + '-' + str.tostring(time) + '-L","price":' + str.tostring(close) + '}',
+          alert.freq_once_per_bar_close)
+if shortSignal and inKz and barstate.isconfirmed
+    alert('{"secret":"' + secret + '","ticker":"' + syminfo.ticker + '","direction":"short","event":"ict_setup",' +
+          '"id":"' + syminfo.ticker + '-' + str.tostring(time) + '-S","price":' + str.tostring(close) + '}',
+          alert.freq_once_per_bar_close)

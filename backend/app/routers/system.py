@@ -91,6 +91,7 @@ async def test_secret(name: str) -> dict:
 # --------------------------------------------------------------------- risk
 class LimitsUpdate(BaseModel):
     max_stake: float | None = None
+    max_risk_per_trade: float | None = None
     max_daily_loss: float | None = None
     max_concurrent: int | None = None
     max_orders_per_day: int | None = None

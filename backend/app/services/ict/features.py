@@ -183,14 +183,30 @@ def session_levels(bars: Bars) -> list[SessionLevels]:
 
 
 # ------------------------------------------------------------------- HTF bias
-def daily_bias_facts(levels: SessionLevels, price: float) -> dict:
+def today_extremes(bars: Bars, i: int) -> tuple[float, float]:
+    """High and low of the current NY trading day up to and including bar i (causal)."""
+    day = ny_trading_day(bars.t[i])
+    hi, lo = bars.h[i], bars.l[i]
+    j = i - 1
+    while j >= 0 and ny_trading_day(bars.t[j]) == day:
+        hi, lo = max(hi, bars.h[j]), min(lo, bars.l[j])
+        j -= 1
+    return hi, lo
+
+
+def daily_bias_facts(levels: SessionLevels, price: float, today: tuple[float, float] | None = None) -> dict:
     """Descriptive (non-numeric) facts for the HTF-bias judgment; also used by the code-mode fallback."""
     if levels.pdh is None or levels.pdl is None:
         return {"known": False}
     mid = (levels.pdh + levels.pdl) / 2
     prev_bullish = levels.pd_close is not None and levels.pd_open is not None and levels.pd_close > levels.pd_open
     range_ = levels.pdh - levels.pdl or 1e-12
+    taken = {}
+    if today:
+        taken = {"previous_day_high_already_traded_today": "yes" if today[0] > levels.pdh else "no",
+                 "previous_day_low_already_traded_today": "yes" if today[1] < levels.pdl else "no"}
     return {
+        **taken,
         "known": True,
         "previous_day_closed": "bullish (close above open)" if prev_bullish else "bearish (close below open)",
         "price_vs_previous_day_range": ("above the previous day high" if price > levels.pdh else

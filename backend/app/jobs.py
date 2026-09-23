@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from concurrent.futures import Future
 from typing import Any, Awaitable, Callable
 
 from app import db, events
@@ -30,7 +31,7 @@ class Job:
         self.error: str | None = None
         self.created_at = db.utc_now()
         self.finished_at: str | None = None
-        self.task: asyncio.Task | None = None
+        self.task: asyncio.Task | Future | None = None  # Task, or concurrent Future when started from a thread
 
     def update(self, **progress: Any) -> None:
         self.progress.update(progress)
@@ -65,7 +66,14 @@ def start(kind: str, params: dict, fn: JobFn) -> Job:
         level = "error" if job.status == "failed" else "info"
         events.publish(f"job.{job.status}", job.to_dict(), level=level, message=f"{kind} {job.status}")
 
-    job.task = asyncio.create_task(runner())
+    # Sync FastAPI endpoints run in a worker thread with no event loop; schedule onto the app loop.
+    try:
+        job.task = asyncio.get_running_loop().create_task(runner())
+    except RuntimeError:
+        loop = events._loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("No application event loop to run background jobs on.")
+        job.task = asyncio.run_coroutine_threadsafe(runner(), loop)
     return job
 
 

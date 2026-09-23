@@ -3,6 +3,10 @@
 Deriv returns at most 1000 candles per `ticks_history` call, and paging with
 `end=` stalls at market-closed gaps (weekends). So backfill walks fixed
 [start, end] windows of 1000 bars; empty windows simply mean the market was shut.
+
+Depth (measured 2026-09-23): Deriv keeps about 1 year of 1-minute candles and about
+1 year of daily candles. Requests older than that silently return recent data
+(adjust_start_time), so they are filtered out by the window check below.
 """
 from __future__ import annotations
 
@@ -15,7 +19,8 @@ from app.services.deriv.client import DerivClient, DerivError
 
 GRANULARITIES = (60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400)
 MAX_PER_REQUEST = 1000
-CONCURRENCY = 4
+CONCURRENCY = 3
+RATE_LIMIT_PAUSE = 20.0  # seconds; Deriv answers "You have reached the rate limit for ticks_history"
 
 Progress = Callable[[dict], Awaitable[None] | None]
 
@@ -55,35 +60,57 @@ def windows(start: int, end: int, granularity: int) -> list[tuple[int, int]]:
     return out
 
 
+def _stored_windows(symbol: str, granularity: int, plan: list[tuple[int, int]]) -> set[tuple[int, int]]:
+    """Windows that already hold bars (closed windows only; the live edge is always refetched)."""
+    if not plan:
+        return set()
+    with db.connect() as conn:
+        epochs = [r[0] for r in conn.execute(
+            "SELECT epoch FROM candles WHERE symbol = ? AND granularity = ? AND epoch BETWEEN ? AND ?",
+            (symbol, granularity, plan[0][0], plan[-1][1]))]
+    span = granularity * MAX_PER_REQUEST
+    filled = {(e - plan[0][0]) // span for e in epochs}
+    edge = time.time() - 2 * 3600
+    return {w for k, w in enumerate(plan) if k in filled and w[1] < edge}
+
+
 async def backfill(symbol: str, granularity: int, start: int, end: int | None = None, *,
-                   client: Optional[DerivClient] = None, progress: Progress | None = None) -> dict:
-    """Fetch [start, end] (epoch seconds) into the candles table. Public data: no token needed."""
+                   client: Optional[DerivClient] = None, progress: Progress | None = None,
+                   skip_existing: bool = True) -> dict:
+    """Fetch [start, end] (epoch seconds) into the candles table. Public data: no token needed.
+
+    Re-running is cheap: windows that already hold bars are skipped, so a rate-limited
+    run can simply be repeated to fill its gaps."""
     granularity = validate_granularity(granularity)
     end = int(end or time.time())
     if start >= end:
         raise ValueError("start must be before end")
     plan = windows(int(start), end, granularity)
+    skipped = await asyncio.to_thread(_stored_windows, symbol, granularity, plan) if skip_existing else set()
+    plan = [w for w in plan if w not in skipped]
     own_client = client is None
     client = client or DerivClient(token="")
     if own_client:
         await client.connect(authorize=False)
     sem = asyncio.Semaphore(CONCURRENCY)
-    stats = {"symbol": symbol, "granularity": granularity, "windows": len(plan), "done": 0,
-             "fetched": 0, "written": 0, "errors": []}
+    stats = {"symbol": symbol, "granularity": granularity, "windows": len(plan), "skipped_existing": len(skipped),
+             "done": 0, "fetched": 0, "written": 0, "rate_limited": 0, "errors": []}
 
     async def one(window: tuple[int, int]) -> None:
         async with sem:
-            for attempt in range(3):
+            candles: list[dict] = []
+            for attempt in range(6):
                 try:
                     candles = await client.ticks_history_candles(
                         symbol, granularity, start=window[0], end=window[1], count=MAX_PER_REQUEST)
                     break
                 except DerivError as exc:
-                    if attempt == 2:
+                    limited = "rate limit" in str(exc).lower() or (exc.code or "").lower() == "ratelimit"
+                    stats["rate_limited"] += int(limited)
+                    if attempt == 5:
                         stats["errors"].append(f"{window[0]}-{window[1]}: {exc}")
-                        candles = []
                     else:
-                        await asyncio.sleep(1.5 * (attempt + 1))
+                        await asyncio.sleep(RATE_LIMIT_PAUSE * (attempt + 1) if limited else 1.5 * (attempt + 1))
             # adjust_start_time can shift into the previous window; keep only this window's bars
             candles = [c for c in candles if window[0] <= int(c["epoch"]) <= window[1]]
             stats["fetched"] += len(candles)

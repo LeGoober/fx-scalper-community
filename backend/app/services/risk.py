@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 from app import config, db, events
 
 DEFAULTS = {
-    "max_stake": 5.0,            # per order, account currency
+    "max_stake": 100.0,          # per order, account currency (multipliers need stake ≫ risk on tight stops)
+    "max_risk_per_trade": 5.0,   # loss at the planned stop (1R), account currency
     "max_daily_loss": 20.0,      # realised loss today before new orders stop
     "max_concurrent": 3,         # open engine/live trades
     "max_orders_per_day": 30,
@@ -37,6 +38,7 @@ class OrderIntent:
     stake: float
     contract_type: str
     is_virtual: bool | None  # from DerivClient.is_virtual after connect
+    risk_amount: float | None = None  # loss at the stop; None for fixed-stake options (risk = stake)
 
 
 def limits() -> dict:
@@ -133,6 +135,9 @@ def check_order(intent: OrderIntent) -> None:
     lim = limits()
     if intent.stake <= 0 or intent.stake > lim["max_stake"]:
         block(f"Stake {intent.stake} exceeds max_stake {lim['max_stake']}.")
+    at_risk = intent.risk_amount if intent.risk_amount is not None else intent.stake
+    if at_risk > lim["max_risk_per_trade"]:
+        block(f"Risk {at_risk} exceeds max_risk_per_trade {lim['max_risk_per_trade']}.")
     stats = today_stats()
     if stats["realised_loss"] >= lim["max_daily_loss"]:
         block(f"Daily loss limit reached ({stats['realised_loss']} ≥ {lim['max_daily_loss']}).")

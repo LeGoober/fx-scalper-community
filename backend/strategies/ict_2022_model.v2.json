@@ -1,0 +1,332 @@
+{
+  "id": "ict_2022_model",
+  "version": 2,
+  "name": "ICT 2022 Mentorship model — raid, shift, FVG",
+  "model": "ICT 2022 Mentorship model",
+  "status": "draft",
+  "description": "Liquidity is raided, displacement breaks the short-term structure the other way and leaves a fair value gap; enter on the return to the first FVG inside the New York killzone, stop beyond the raid, target the opposing liquidity. v2 fixes the premium/discount range; drafted from keyword-retrieved transcript passages (episodes 1-21); Jev-tagged digest refinement pending.",
+  "symbols": [
+    "frxEURUSD",
+    "frxGBPUSD",
+    "OTC_NDX"
+  ],
+  "entry_granularity": 300,
+  "scan": {
+    "swing_k": 2,
+    "liquidity_lookback": 288,
+    "mss_window": 24,
+    "displacement_min_body_atr": 1.2,
+    "fvg_min_atr": 0.05,
+    "fvg_grace": 2,
+    "use_session_levels": true
+  },
+  "nodes": [
+    {
+      "id": "liquidity_raid",
+      "label": "Liquidity raid",
+      "kind": "trigger",
+      "description": "Price runs below sell-side liquidity (swing low, previous-day low, Asian low) for longs, or above buy-side liquidity for shorts.",
+      "citations": [
+        {
+          "video_id": "EpGQnhjXBq8",
+          "t": 2227,
+          "title": "2022 ICT Mentorship Episode 16",
+          "note": "we see it do a run lower… we break below swing low, market structure shifts"
+        },
+        {
+          "video_id": "8GkQfdAXZP0",
+          "t": 4321,
+          "title": "2022 ICT Mentorship Episode 12",
+          "note": "liquidity going above old highs for buy stops, going below old lows for sell stops, or rebalancing"
+        }
+      ]
+    },
+    {
+      "id": "market_structure_shift",
+      "label": "Short-term structure broken",
+      "kind": "trigger",
+      "description": "Within 24 bars of the raid, a candle closes beyond the last short-term swing that preceded the raid.",
+      "citations": [
+        {
+          "video_id": "8GkQfdAXZP0",
+          "t": 2247,
+          "title": "2022 ICT Mentorship Episode 12",
+          "note": "look for the short-term low being broken, that's your market structure shift"
+        },
+        {
+          "video_id": "nQfHZ2DEJ8c",
+          "t": 154,
+          "title": "2022 ICT Mentorship Episode 3",
+          "note": "think about intraday market structure shifts"
+        }
+      ]
+    },
+    {
+      "id": "displacement",
+      "label": "Displacement present",
+      "kind": "trigger",
+      "description": "The move from the raid contains at least one candle whose body is ≥ 1.2 × ATR.",
+      "citations": [
+        {
+          "video_id": "Sqw2bww93Zo",
+          "t": 1056,
+          "title": "2022 ICT Mentorship Episode 11",
+          "note": "I want to see displacement"
+        },
+        {
+          "video_id": "Sqw2bww93Zo",
+          "t": 1151,
+          "title": "2022 ICT Mentorship Episode 11",
+          "note": "the displacement comes, which is what I was waiting for, and it gives you a confirmation"
+        }
+      ]
+    },
+    {
+      "id": "first_fvg",
+      "label": "First fair value gap",
+      "kind": "trigger",
+      "description": "The first fair value gap left inside the displacement leg (at most 2 bars after the shift) arms the setup.",
+      "citations": [
+        {
+          "video_id": "EpGQnhjXBq8",
+          "t": 1357,
+          "title": "2022 ICT Mentorship Episode 16",
+          "note": "the first fair value gap here… because we have this short term low broken with the run lower"
+        },
+        {
+          "video_id": "8GkQfdAXZP0",
+          "t": 2247,
+          "title": "2022 ICT Mentorship Episode 12",
+          "note": "then you see price go up into that imbalance and then you can go short"
+        }
+      ]
+    },
+    {
+      "id": "killzone",
+      "label": "New York killzone",
+      "kind": "code",
+      "detector": "killzone",
+      "params": {
+        "zones": [
+          "ny_am"
+        ],
+        "index_zones": [
+          "ny_am_index"
+        ],
+        "at": "mss"
+      },
+      "description": "The structure break happens 07:00–10:00 New York time for forex, 08:30–11:00 for indices.",
+      "citations": [
+        {
+          "video_id": "5WIqHJDQ_p4",
+          "t": 817,
+          "title": "2022 ICT Mentorship Episode 17",
+          "note": "seven o'clock to ten o'clock… on a five minute chart you're hunting your setup"
+        },
+        {
+          "video_id": "5WIqHJDQ_p4",
+          "t": 1463,
+          "title": "2022 ICT Mentorship Episode 17",
+          "note": "index trading I'm focusing on 8:30 to 11"
+        }
+      ]
+    },
+    {
+      "id": "premium_discount",
+      "label": "Entry in daily discount / premium",
+      "kind": "code",
+      "detector": "premium_discount",
+      "params": {
+        "range": "previous_day",
+        "max_depth": 0.5
+      },
+      "description": "Longs enter at or below 50% of the previous NY trading day's high-low range (discount); shorts at or above 50% (premium). v1 measured this on the displacement leg, which contradicts entering at the FVG created at the structure break.",
+      "citations": [
+        {
+          "video_id": "S9ORTYmXwdE",
+          "t": 249,
+          "title": "2022 ICT Mentorship Episode 10",
+          "note": "daily chart: I outlined this high and this low… the 50% level was equilibrium; above is premium, below 50% is a discount"
+        }
+      ]
+    },
+    {
+      "id": "min_rr",
+      "label": "Target at opposing liquidity ≥ 2R",
+      "kind": "code",
+      "detector": "min_rr",
+      "params": {
+        "min_rr": 2.0
+      },
+      "description": "The nearest opposing liquidity beyond the leg must pay at least 2× the risk (capped at 5R).",
+      "citations": [
+        {
+          "video_id": "tpPtItWqmlg",
+          "t": 407,
+          "title": "2022 ICT Mentorship Episode 13",
+          "note": "know where the stop is, how much you risk, what you aim for, in advance"
+        },
+        {
+          "video_id": "S9ORTYmXwdE",
+          "t": 1327,
+          "title": "2022 ICT Mentorship Episode 10",
+          "note": "relative equal highs, stops resting above: buy side liquidity. What's it drawing up to?"
+        }
+      ]
+    },
+    {
+      "id": "cost_budget",
+      "label": "Costs ≤ 25% of risk",
+      "kind": "code",
+      "detector": "cost_budget",
+      "params": {
+        "max_cost_r": 0.25
+      },
+      "description": "Execution realism, not ICT doctrine: on 5-minute charts stops can be a few pips, where Deriv spread + commission would consume most of 1R. Rejects setups whose round-trip cost exceeds 25% of the risk.",
+      "citations": []
+    },
+    {
+      "id": "displacement_quality",
+      "label": "Displacement quality",
+      "kind": "jev",
+      "question": {
+        "type": "score",
+        "instructions": "How strong is the move described in `displacement`, in the sense of an energetic, one-directional move away from the raided level that breaks structure?",
+        "criteria": [
+          "Weak: small, overlapping, hesitant candles; barely breaks structure.",
+          "Moderate: some larger candles, but choppy or with long opposing wicks.",
+          "Strong: several large-bodied candles closing near their extremes, clearly breaking structure.",
+          "Explosive: a fast, one-sided move that decisively breaks structure and leaves a clear gap."
+        ]
+      },
+      "gate": {
+        "min": 0.55
+      },
+      "fallback": "displacement_rule",
+      "params": {
+        "min": 0.3
+      },
+      "description": "Jev grades the displacement from facts code computed (body/ATR, closes near extreme, candle count). Fallback: normalised body/ATR ≥ 0.3.",
+      "citations": [
+        {
+          "video_id": "Sqw2bww93Zo",
+          "t": 1151,
+          "title": "2022 ICT Mentorship Episode 11",
+          "note": "the displacement comes… it gives you a confirmation"
+        }
+      ]
+    },
+    {
+      "id": "htf_draw",
+      "label": "Daily draw on liquidity agrees",
+      "kind": "jev",
+      "question": {
+        "type": "choice",
+        "instructions": "Given `daily_context`, where is price more likely to be drawn next today? Liquidity that has already traded today is no longer a draw.",
+        "criteria": {
+          "buy_side_above": "Toward buy-side liquidity above, such as the previous day high.",
+          "sell_side_below": "Toward sell-side liquidity below, such as the previous day low.",
+          "unclear": "The facts do not favour either side."
+        }
+      },
+      "gate": {
+        "expect": {
+          "long": "buy_side_above",
+          "short": "sell_side_below"
+        },
+        "min_probability": 0.45
+      },
+      "fallback": "htf_bias_rule",
+      "description": "Trade only toward the daily draw on liquidity. Jev judges it from the daily facts, including whether the previous day high/low has already traded today. Fallback rule (v2): the opposing previous-day extreme must still be resting, untaken today.",
+      "citations": [
+        {
+          "video_id": "8GkQfdAXZP0",
+          "t": 470,
+          "title": "2022 ICT Mentorship Episode 12",
+          "note": "teach me bias… where's the market going next: that's the next draw on liquidity"
+        },
+        {
+          "video_id": "Sqw2bww93Zo",
+          "t": 824,
+          "title": "2022 ICT Mentorship Episode 11",
+          "note": "a price chart with a directional bias… leading to a draw on liquidity"
+        }
+      ],
+      "params": {
+        "mode": "unswept_opposing"
+      }
+    },
+    {
+      "id": "news_filter",
+      "label": "High-impact news nearby (flag)",
+      "kind": "code",
+      "detector": "news_filter",
+      "params": {
+        "minutes": 15,
+        "min_importance": 3
+      },
+      "on_fail": "flag",
+      "description": "Flags setups within ±15 min of high-impact news for the pair's currencies. ICT does not avoid news outright, so this flags rather than rejects.",
+      "citations": [
+        {
+          "video_id": "5WIqHJDQ_p4",
+          "t": 1523,
+          "title": "2022 ICT Mentorship Episode 17",
+          "note": "high impact news at 10 o'clock extends the New York kill zone… don't be afraid of them"
+        }
+      ]
+    },
+    {
+      "id": "model_alignment",
+      "label": "Holistic model check (flag)",
+      "kind": "jev",
+      "question": {
+        "type": "noul",
+        "instructions": "The facts in state describe ICT's 2022 model: liquidity was raided, then displacement broke the short-term structure the other way and left a fair value gap, during a New York or London session, with the trade aimed at opposing liquidity.",
+        "criteria": {
+          "true": "All parts of the model are present and consistent.",
+          "false": "A part is missing or contradicts the model."
+        }
+      },
+      "gate": {
+        "min": 0.6
+      },
+      "on_fail": "flag",
+      "description": "A sanity judgment over the whole setup; it only flags, so it can be measured before it is trusted.",
+      "citations": []
+    }
+  ],
+  "execution": {
+    "entry": "fvg_ce",
+    "stop_buffer_atr": 0.1,
+    "target": {
+      "mode": "liquidity",
+      "r": 2.0,
+      "min_rr": 2.0,
+      "max_r": 5.0
+    },
+    "entry_window_bars": 12,
+    "max_trades_per_day": 1,
+    "session_exit_ny": "16:00",
+    "contract": {
+      "type": "multiplier",
+      "multiplier": 100
+    },
+    "risk_per_trade_pct": 1.0
+  },
+  "jev_model_pin": null,
+  "sources": [
+    {
+      "playlist": "PLVgHx4Z63paYiFGQ56PjTF1PGePL3r69s",
+      "title": "2022 ICT Mentorship",
+      "channel": "The Inner Circle Trader",
+      "episodes_used": "Introduction, 2-21"
+    }
+  ],
+  "authored_by": "Claude (claude-opus-5-5), from transcript passages; review pending",
+  "changelog": [
+    "v1 (2026-09-23): initial draft from keyword retrieval over episodes 1-21; Jev-tagged digest refinement pending.",
+    "v2 (2026-09-23): premium/discount measured on the previous-day dealing range (the daily range cited in Ep. 10 @4:09) instead of the displacement leg.",
+    "v2 (2026-09-23): htf_draw fallback uses the untaken opposing previous-day extreme (v1's 'follow the previous close' contradicted the daily-discount rule); Jev now sees whether PDH/PDL already traded today."
+  ]
+}
