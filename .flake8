@@ -1,0 +1,8 @@
+[flake8]
+max-line-length = 120
+max-complexity = 15
+exclude = .venv,venv,node_modules,frontend,ui
+per-file-ignores =
+    # Moved verbatim from the original Flask server.py; long lines kept for a clean upstream diff.
+    backend/app/legacy/core.py: E501
+    app/legacy/core.py: E501

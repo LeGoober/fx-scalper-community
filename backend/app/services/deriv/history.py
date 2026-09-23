@@ -35,7 +35,6 @@ def upsert(symbol: str, granularity: int, candles: list[dict], source: str = "de
         for c in candles
     ]
     with db.connect() as conn, db.tx(conn):
-        before = conn.total_changes
         conn.executemany(
             "INSERT INTO candles(symbol, granularity, epoch, open, high, low, close, source) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
@@ -43,7 +42,7 @@ def upsert(symbol: str, granularity: int, candles: list[dict], source: str = "de
             "open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close",
             params,
         )
-        return conn.total_changes - before
+    return len(params)  # rows upserted (inserted or refreshed)
 
 
 def windows(start: int, end: int, granularity: int) -> list[tuple[int, int]]:
@@ -139,13 +138,14 @@ def coverage() -> list[dict]:
     """Per symbol/granularity: bar count, range and the largest gaps (weekends included; the UI labels them)."""
     with db.connect() as conn:
         series = db.rows(conn, "SELECT symbol, granularity, COUNT(*) AS bars, MIN(epoch) AS first, "
-                               "MAX(epoch) AS last FROM candles GROUP BY symbol, granularity ORDER BY symbol, granularity")
+                               "MAX(epoch) AS last FROM candles GROUP BY symbol, granularity "
+                               "ORDER BY symbol, granularity")
         for item in series:
             gaps = db.rows(conn, """
                 SELECT prev AS from_epoch, epoch AS to_epoch, epoch - prev AS seconds FROM (
                   SELECT epoch, LAG(epoch) OVER (ORDER BY epoch) AS prev FROM candles
                   WHERE symbol = ? AND granularity = ?)
                 WHERE prev IS NOT NULL AND epoch - prev > ? ORDER BY seconds DESC LIMIT 5""",
-                (item["symbol"], item["granularity"], item["granularity"]))
+                           (item["symbol"], item["granularity"], item["granularity"]))
             item["largest_gaps"] = gaps
     return series

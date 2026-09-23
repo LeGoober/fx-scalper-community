@@ -27,7 +27,6 @@ SUPPORTED_ASSET_CLASSES = (
 )
 
 
-
 DEFAULT_TARGET_ALLOCATIONS = {
     "FOREX": 0.40,
     "COMMODITIES": 0.20,
@@ -129,7 +128,6 @@ class RebalanceAction:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
 
 
 def normalize_key_mode(value: object) -> str:
@@ -305,7 +303,6 @@ def sanitize_state(state: object) -> dict:
     return clean_state
 
 
-
 def sanitize_live_amount(value: object, default: float = 1.0) -> float:
     try:
         amount = float(value)
@@ -366,7 +363,6 @@ def signal_thresholds(risk_profile: str) -> dict[str, float]:
 def configured_market_snapshots(settings: dict) -> list[dict]:
     symbol_map = symbol_map_from_settings(settings)
     return normalize_market_snapshots(settings.get("market_snapshots", []), symbol_map)
-
 
 
 def record_broker_status(state: dict, status: dict) -> dict:
@@ -671,4 +667,3 @@ def normalize_settings(payload: dict, current: dict) -> dict:
     )
     merged["target_allocations"] = normalize_target_allocations(payload.get("target_allocations", current.get("target_allocations", DEFAULT_TARGET_ALLOCATIONS)), merged["rebalance_key_mode"])
     return merged
-

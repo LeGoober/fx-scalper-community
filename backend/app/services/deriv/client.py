@@ -154,7 +154,7 @@ class DerivClient:
             "is_virtual": self.is_virtual,
             "endpoint": self.endpoint_kind,
             "account_type": a.get("account_type") or ("demo" if self.is_virtual else "real" if self.is_virtual is False
-                                                       else None),
+                                                      else None),
             "currency": a.get("currency"),
             "balance": a.get("balance"),
             "rtt_ms": self.last_rtt_ms,

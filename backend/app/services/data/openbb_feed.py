@@ -157,7 +157,8 @@ def _forexfactory() -> list[dict]:
 
 def _openbb_calendar(provider: str, start: date, end: date) -> list[dict]:
     obb = _load_obb()
-    frame = obb.economy.calendar(provider=provider, start_date=start.isoformat(), end_date=end.isoformat()).to_dataframe()
+    frame = obb.economy.calendar(provider=provider, start_date=start.isoformat(),
+                                 end_date=end.isoformat()).to_dataframe()
     items = []
     for _, row in frame.reset_index().iterrows():
         when = row.get("date")
@@ -190,7 +191,8 @@ def calendar(days_back: int = 1, days_ahead: int = 7, provider: str | None = Non
     return {"provider": chosen, "fetched": len(fetched), "events": events_between(lo, hi, min_importance)}
 
 
-def events_between(start_ts: int, end_ts: int, min_importance: int = 3, currencies: list[str] | None = None) -> list[dict]:
+def events_between(start_ts: int, end_ts: int, min_importance: int = 3,
+                   currencies: list[str] | None = None) -> list[dict]:
     sql = "SELECT * FROM econ_events WHERE ts BETWEEN ? AND ? AND importance >= ?"
     params: list = [start_ts, end_ts, min_importance]
     if currencies:
