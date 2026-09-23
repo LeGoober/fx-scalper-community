@@ -1,31 +1,21 @@
+"""Legacy dashboard logic, moved verbatim from the original Flask `server.py`.
+
+Only the I/O changed: state now lives in SQLite (see legacy/state.py), Deriv
+tokens come from the environment (never from stored state), and the sync
+Deriv client factory is gone (routers use the async client).
+"""
 from __future__ import annotations
 
-import json
-import os
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from flask import Flask, jsonify, request
-from flask_cors import CORS
+from app import config
 
-from app.deriv_service import (
-    DEFAULT_REST_URL,
-    DEFAULT_WS_URL,
-    DerivCommunityClient,
-    DerivServiceError,
-)
-
-app = Flask(__name__)
-CORS(app)
-
-DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-
-DEFAULT_DERIV_API_URL = DEFAULT_REST_URL
-DEFAULT_DERIV_WS_URL = DEFAULT_WS_URL
+DEFAULT_DERIV_API_URL = config.DEFAULT_DERIV_REST_URL
+DEFAULT_DERIV_WS_URL = config.DEFAULT_DERIV_WS_URL
 SUPPORTED_ASSET_CLASSES = (
     "FOREX",
     "COMMODITIES",
@@ -37,31 +27,6 @@ SUPPORTED_ASSET_CLASSES = (
 )
 
 
-def resolve_data_dir() -> Path:
-    candidates: list[Path] = []
-    env_dir = os.getenv("COMMUNITY_DATA_DIR")
-    if env_dir:
-        candidates.append(Path(env_dir).expanduser())
-    candidates.extend([DEFAULT_DATA_DIR, Path.home() / ".fx-scalper-community"])
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-            probe = candidate / ".write_test"
-            probe.write_text("", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return candidate
-        except Exception:
-            continue
-    return DEFAULT_DATA_DIR
-
-
-DATA_DIR = resolve_data_dir()
-STORE_PATH = DATA_DIR / "store.json"
 
 DEFAULT_TARGET_ALLOCATIONS = {
     "FOREX": 0.40,
@@ -166,25 +131,6 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def ensure_store() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not STORE_PATH.exists():
-        STORE_PATH.write_text(json.dumps(DEFAULT_STATE, indent=2), encoding="utf-8")
-
-
-def load_state() -> dict:
-    ensure_store()
-    try:
-        stored = json.loads(STORE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        stored = deepcopy(DEFAULT_STATE)
-    return sanitize_state(stored)
-
-
-def save_state(state: dict) -> None:
-    ensure_store()
-    STORE_PATH.write_text(json.dumps(sanitize_state(state), indent=2), encoding="utf-8")
-
 
 def normalize_key_mode(value: object) -> str:
     mode = str(value or "asset_class").strip().lower()
@@ -280,18 +226,14 @@ def normalize_market_snapshots(snapshots: object, symbol_map: dict[str, dict]) -
 
 
 def runtime_setting_overrides() -> dict:
-    overrides: dict[str, object] = {}
-    mapping = {
-        "COMMUNITY_DERIV_APP_ID": "deriv_app_id",
-        "COMMUNITY_DERIV_TOKEN": "deriv_token",
-        "COMMUNITY_DERIV_API_URL": "deriv_api_url",
-        "COMMUNITY_DERIV_WS_URL": "deriv_ws_url",
+    # Connection details always come from the environment (see app/config.py).
+    # The token is never copied into stored settings.
+    return {
+        "deriv_app_id": config.deriv_app_id(),
+        "deriv_token": "",
+        "deriv_api_url": config.deriv_rest_url(),
+        "deriv_ws_url": config.deriv_ws_url(),
     }
-    for env_key, setting_key in mapping.items():
-        value = os.getenv(env_key)
-        if value:
-            overrides[setting_key] = value
-    return overrides
 
 
 def sanitize_position(raw_position: object, symbol_map: dict[str, dict]) -> Optional[dict]:
@@ -363,14 +305,6 @@ def sanitize_state(state: object) -> dict:
     return clean_state
 
 
-def error_response(message: str, status_code: int = 400):
-    return jsonify({"error": message}), status_code
-
-
-def json_payload() -> dict:
-    payload = request.get_json(silent=True)
-    return payload if isinstance(payload, dict) else {}
-
 
 def sanitize_live_amount(value: object, default: float = 1.0) -> float:
     try:
@@ -433,16 +367,6 @@ def configured_market_snapshots(settings: dict) -> list[dict]:
     symbol_map = symbol_map_from_settings(settings)
     return normalize_market_snapshots(settings.get("market_snapshots", []), symbol_map)
 
-
-def deriv_client_from_settings(settings: dict) -> DerivCommunityClient:
-    return DerivCommunityClient(
-        app_id=str(settings.get("deriv_app_id") or "").strip(),
-        token=str(settings.get("deriv_token") or "").strip(),
-        rest_url=str(settings.get("deriv_api_url") or DEFAULT_DERIV_API_URL).strip() or DEFAULT_DERIV_API_URL,
-        ws_url=str(settings.get("deriv_ws_url") or DEFAULT_DERIV_WS_URL).strip() or DEFAULT_DERIV_WS_URL,
-        options_account_mode=str(settings.get("deriv_options_account_mode") or "demo").strip().lower() or "demo",
-        options_account_id=str(settings.get("deriv_options_account_id") or "").strip(),
-    )
 
 
 def record_broker_status(state: dict, status: dict) -> dict:
@@ -654,8 +578,8 @@ def backtest_summary(state: dict) -> dict:
 
 def setup_status(settings: dict, market: list[dict]) -> dict:
     symbols = normalize_symbols(settings.get("symbols", []))
-    deriv_app_id = str(settings.get("deriv_app_id") or "").strip()
-    deriv_token = str(settings.get("deriv_token") or "").strip()
+    deriv_app_id = config.deriv_app_id()
+    deriv_token = config.deriv_token()
     live_enabled = bool(settings.get("live_trading_enabled", False))
     return {
         "broker_provider": settings.get("broker_provider", "deriv"),
@@ -677,6 +601,11 @@ def setup_status(settings: dict, market: list[dict]) -> dict:
     }
 
 
+def public_settings(settings: dict) -> dict:
+    """Settings safe to send to a browser: the token is never included, only whether it is set."""
+    return {**settings, "deriv_token": "", "deriv_token_set": bool(config.deriv_token())}
+
+
 def bootstrap_payload(state: dict) -> dict:
     settings = state.get("settings", {})
     state["portfolio"] = refresh_portfolio_prices(state.get("portfolio", []), settings)
@@ -686,7 +615,7 @@ def bootstrap_payload(state: dict) -> dict:
         settings.get("rebalance_key_mode", "asset_class"),
     )
     return {
-        "settings": settings,
+        "settings": public_settings(settings),
         "market": market,
         "signals": [row for row in market if row["decision"] != "HOLD"],
         "portfolio": state.get("portfolio", []),
@@ -712,10 +641,9 @@ def normalize_settings(payload: dict, current: dict) -> dict:
     merged["paper_trading_enabled"] = bool(payload.get("paper_trading_enabled", current.get("paper_trading_enabled", True)))
     merged["live_trading_enabled"] = bool(payload.get("live_trading_enabled", current.get("live_trading_enabled", False)))
     merged["broker_provider"] = "deriv"
-    merged["deriv_app_id"] = str(payload_value(payload, "deriv_app_id", current, merged, "") or "").strip()
-    merged["deriv_token"] = str(payload_value(payload, "deriv_token", current, merged, "") or "").strip()
-    merged["deriv_api_url"] = str(payload_value(payload, "deriv_api_url", current, merged, DEFAULT_DERIV_API_URL) or DEFAULT_DERIV_API_URL).strip()
-    merged["deriv_ws_url"] = str(payload_value(payload, "deriv_ws_url", current, merged, DEFAULT_DERIV_WS_URL) or DEFAULT_DERIV_WS_URL).strip()
+    # Connection fields are environment-owned; payload values are ignored here (the
+    # router routes a submitted token/app id to the write-only secret store instead).
+    merged.update(runtime_setting_overrides())
     account_mode = str(payload_value(payload, "deriv_options_account_mode", current, merged, "demo")).strip().lower()
     merged["deriv_options_account_mode"] = account_mode if account_mode in {"demo", "real"} else "demo"
     merged["deriv_options_account_id"] = str(payload_value(payload, "deriv_options_account_id", current, merged, "") or "").strip()
@@ -744,298 +672,3 @@ def normalize_settings(payload: dict, current: dict) -> dict:
     merged["target_allocations"] = normalize_target_allocations(payload.get("target_allocations", current.get("target_allocations", DEFAULT_TARGET_ALLOCATIONS)), merged["rebalance_key_mode"])
     return merged
 
-
-@app.get("/api/health")
-def health():
-    return jsonify({"ok": True, "service": "fx-scalper-community", "broker_provider": "deriv"})
-
-
-@app.get("/api/bootstrap")
-def bootstrap():
-    return jsonify(bootstrap_payload(load_state()))
-
-
-@app.get("/api/rules")
-def rules():
-    return jsonify({"rules": RULES})
-
-
-@app.post("/api/config")
-def update_config():
-    state = load_state()
-    state["settings"] = normalize_settings(json_payload(), state.get("settings", {}))
-    save_state(state)
-    return jsonify({"message": "Settings updated", "settings": state["settings"]})
-
-
-@app.get("/api/broker/status")
-def broker_status():
-    state = load_state()
-    settings = state.get("settings", {})
-    return jsonify(
-        {
-            "status": state.get("last_broker_status"),
-            "setup": setup_status(settings, market_view(settings)),
-        }
-    )
-
-
-@app.post("/api/broker/test")
-def broker_test():
-    state = load_state()
-    settings = state.get("settings", {})
-    if not str(settings.get("deriv_app_id") or "").strip() or not str(settings.get("deriv_token") or "").strip():
-        status = record_broker_status(
-            state,
-            {
-                "ok": False,
-                "connected": False,
-                "message": "Add a Deriv app ID and API token before testing the broker connection.",
-                "token_mode": "pat" if str(settings.get("deriv_token") or "").strip().startswith("pat_") else "legacy",
-            },
-        )
-        save_state(state)
-        return jsonify({"ok": False, "message": status["message"], "status": status})
-    client = deriv_client_from_settings(settings)
-    try:
-        snapshot = client.connect()
-        active_symbols = client.get_active_symbols()
-        options_account_id = str(snapshot.get("options_account_id") or "").strip()
-        if options_account_id:
-            state["settings"]["deriv_options_account_id"] = options_account_id
-        status = record_broker_status(
-            state,
-            {
-                "ok": True,
-                "connected": True,
-                "message": "Deriv connection verified successfully.",
-                "active_symbol_count": len(active_symbols),
-                **snapshot,
-            },
-        )
-        save_state(state)
-        return jsonify({"ok": True, "message": status["message"], "status": status})
-    except DerivServiceError as exc:
-        status = record_broker_status(
-            state,
-            {
-                "ok": False,
-                "connected": False,
-                "message": str(exc),
-                "app_id": client.app_id,
-                "token_mode": client.token_mode,
-                "options_account_mode": settings.get("deriv_options_account_mode", "demo"),
-            },
-        )
-        save_state(state)
-        return jsonify({"ok": False, "message": str(exc), "status": status})
-    finally:
-        client.close()
-
-
-@app.post("/api/paper-trades/open")
-def paper_trade_open():
-    state = load_state()
-    payload = json_payload()
-    settings = state.get("settings", {})
-    symbol_map = symbol_map_from_settings(settings)
-    market_map = {row["symbol"]: row for row in configured_market_snapshots(settings)}
-    if not settings.get("paper_trading_enabled", True):
-        return error_response("Paper trading is disabled in settings.", 400)
-    symbol = str(payload.get("symbol") or "").strip()
-    side = sanitize_trade_side(payload.get("side"), "BUY")
-    try:
-        exposure = float(payload.get("exposure") or 0)
-        price = float(payload.get("price") or 0)
-    except Exception:
-        return error_response("Exposure and price must be numeric.")
-    if not symbol or side not in {"BUY", "SELL"} or exposure <= 0 or price <= 0:
-        return error_response("Invalid paper trade payload.")
-    if len(state.get("portfolio", [])) >= int(settings.get("max_open_positions", 6)):
-        return error_response("Max open positions reached.")
-    meta = symbol_map.get(symbol)
-    if not meta:
-        return error_response("Unknown symbol. Add it in settings before opening a paper trade.")
-    latest_market = market_map.get(symbol)
-    position = {
-        "id": f"pos-{uuid4().hex[:8]}",
-        "symbol": symbol,
-        "asset_class": meta["asset_class"],
-        "side": side,
-        "exposure": round(exposure, 2),
-        "entry_price": round(price, 5),
-        "current_price": round(float((latest_market or {}).get("price") or price), 5),
-        "opened_at": utc_now_iso(),
-    }
-    state.setdefault("portfolio", []).append(position)
-    state.setdefault("trade_history", []).insert(
-        0,
-        {
-            "timestamp": utc_now_iso(),
-            "type": "OPEN",
-            "symbol": symbol,
-            "side": side,
-            "exposure": position["exposure"],
-            "note": "Paper trade opened from community dashboard.",
-        },
-    )
-    save_state(state)
-    return jsonify({"message": "Paper trade opened", "position": position})
-
-
-@app.post("/api/live-trades/open")
-def live_trade_open():
-    state = load_state()
-    settings = state.get("settings", {})
-    payload = json_payload()
-    if not settings.get("live_trading_enabled", False):
-        return error_response("Live trading is disabled in settings.", 400)
-    symbol = str(payload.get("symbol") or "").strip()
-    side = sanitize_trade_side(payload.get("side"), "BUY")
-    symbol_map = symbol_map_from_settings(settings)
-    if symbol not in symbol_map:
-        return error_response("Unknown symbol. Add it in settings before placing a live trade.", 400)
-    amount = sanitize_live_amount(payload.get("amount", settings.get("live_trade_stake", 1.0)), settings.get("live_trade_stake", 1.0))
-    duration = sanitize_duration(payload.get("duration", settings.get("live_trade_duration", 5)), settings.get("live_trade_duration", 5))
-    duration_unit = sanitize_duration_unit(
-        payload.get("duration_unit", settings.get("live_trade_duration_unit", "t")),
-        settings.get("live_trade_duration_unit", "t"),
-    )
-    currency = sanitize_currency(payload.get("currency", settings.get("live_trade_currency", "USD")), settings.get("live_trade_currency", "USD"))
-    contract_type = sanitize_live_contract_type(payload.get("contract_type"), side)
-    client = deriv_client_from_settings(settings)
-    try:
-        snapshot = client.connect()
-        proposal = client.propose(
-            symbol=symbol,
-            contract_type=contract_type,
-            amount=amount,
-            duration=duration,
-            duration_unit=duration_unit,
-            currency=currency,
-        )
-        proposal_id = str(proposal.get("id") or proposal.get("proposal_id") or "").strip()
-        if not proposal_id:
-            raise DerivServiceError("Deriv did not return a proposal ID for this trade.")
-        ask_price = sanitize_live_amount(proposal.get("ask_price", amount), amount)
-        buy = client.buy(proposal_id, ask_price)
-        options_account_id = str(snapshot.get("options_account_id") or "").strip()
-        if options_account_id:
-            state["settings"]["deriv_options_account_id"] = options_account_id
-        status = record_broker_status(
-            state,
-            {
-                "ok": True,
-                "connected": True,
-                "message": "Deriv live trade submitted successfully.",
-                **snapshot,
-            },
-        )
-        state.setdefault("trade_history", []).insert(
-            0,
-            {
-                "timestamp": utc_now_iso(),
-                "type": "LIVE_OPEN",
-                "symbol": symbol,
-                "side": side,
-                "exposure": amount,
-                "note": (
-                    f"Live {contract_type} submitted via Deriv community flow. "
-                    f"Contract {buy.get('contract_id') or buy.get('transaction_id') or 'pending'}."
-                ),
-            },
-        )
-        save_state(state)
-        return jsonify(
-            {
-                "message": "Live trade submitted",
-                "status": status,
-                "proposal": proposal,
-                "buy": buy,
-                "request": {
-                    "symbol": symbol,
-                    "side": side,
-                    "contract_type": contract_type,
-                    "amount": amount,
-                    "currency": currency,
-                    "duration": duration,
-                    "duration_unit": duration_unit,
-                },
-            }
-        )
-    except DerivServiceError as exc:
-        status = record_broker_status(
-            state,
-            {
-                "ok": False,
-                "connected": False,
-                "message": str(exc),
-                "app_id": client.app_id,
-                "token_mode": client.token_mode,
-                "options_account_mode": settings.get("deriv_options_account_mode", "demo"),
-            },
-        )
-        state.setdefault("trade_history", []).insert(
-            0,
-            {
-                "timestamp": utc_now_iso(),
-                "type": "LIVE_ERROR",
-                "symbol": symbol,
-                "side": side,
-                "exposure": amount,
-                "note": str(exc),
-            },
-        )
-        save_state(state)
-        return jsonify({"error": str(exc), "status": status}), 400
-    finally:
-        client.close()
-
-
-@app.post("/api/paper-trades/rebalance")
-def paper_trade_rebalance():
-    state = load_state()
-    if not state.get("settings", {}).get("rebalance_enabled", True):
-        return error_response("Rebalancing is disabled in settings.", 400)
-    plan = build_rebalance_plan(state)
-    closed = []
-    for action in plan["actions"]:
-        if action["action"] != "CLOSE_POSITION" or not action.get("position_id"):
-            continue
-        for index, position in enumerate(list(state.get("portfolio", []))):
-            if str(position.get("id")) == action["position_id"]:
-                state["portfolio"].pop(index)
-                state.setdefault("trade_history", []).insert(
-                    0,
-                    {
-                        "timestamp": utc_now_iso(),
-                        "type": "REBALANCE_CLOSE",
-                        "symbol": position["symbol"],
-                        "side": position["side"],
-                        "exposure": position["exposure"],
-                        "note": action["reason"],
-                    },
-                )
-                closed.append(position)
-                break
-    save_state(state)
-    return jsonify({"message": "Rebalance applied", "plan": plan, "closed_positions": closed})
-
-
-@app.post("/api/backtests/run")
-def backtests_run():
-    state = load_state()
-    state["last_backtest"] = backtest_summary(state)
-    save_state(state)
-    return jsonify({"message": "Backtests completed", "summary": state["last_backtest"]})
-
-
-@app.post("/api/reset")
-def reset():
-    state = deepcopy(DEFAULT_STATE)
-    save_state(state)
-    return jsonify({"message": "Community edition state reset", "settings": state["settings"]})
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)

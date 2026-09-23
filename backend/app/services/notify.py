@@ -1,17 +1,21 @@
 """
-webhooks.py — Send trade notifications to Discord & Telegram.
+notify.py — Send trade notifications to Discord & Telegram (was backend/webhooks.py).
 
 Used by the trading engine to broadcast trade events. Both channels
 can run simultaneously; configure via environment variables.
 """
 import os
-import json
-import requests
-from datetime import datetime
+from datetime import datetime, timezone
+
+import httpx as requests  # same .post(url, json=, timeout=) surface as the original
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _fmt_ts() -> str:
-    return datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    return _utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
 
 
 def send_discord(message: str, embed: dict = None) -> bool:
@@ -68,7 +72,7 @@ def notify_trade_opened(symbol: str, direction: str, stake: float, price: float,
             {"name": "Entry", "value": f"{price:.5f}", "inline": True},
             {"name": "Regime", "value": regime, "inline": True},
         ],
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": _utcnow().isoformat(),
     }
     send_discord(msg, discord_embed)
     send_telegram(f"<b>{emoji} Trade Opened</b>\n{symbol} {direction} | ${stake:.2f} @ {price:.5f}")
@@ -94,7 +98,7 @@ def notify_trade_closed(symbol: str, direction: str, profit: float, reason: str)
             {"name": "P&L", "value": f"${profit:+.2f}", "inline": True},
             {"name": "Reason", "value": reason, "inline": False},
         ],
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": _utcnow().isoformat(),
     }
     send_discord(msg, discord_embed)
     send_telegram(

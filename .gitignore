@@ -1,8 +1,27 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Environments & secrets
 .env
 .venv/
+venv/
+
+# Editor backups (Vim)
+*~
+*.un~
+*.swp
+
+# Frontend builds
 node_modules/
 dist/
+
+# Local data (never committed)
 backend/data/store.json
+backend/data/*.db
+backend/data/*.db-*
+# Transcripts are the creator's copyrighted content: personal research only
+backend/data/transcripts/
+logs/
+
 .DS_Store

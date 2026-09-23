@@ -1,0 +1,4 @@
+# Optional heavy data layer: higher-timeframe candles, economic calendar and news via OpenBB.
+# The backend imports it lazily and keeps working without it.
+-r requirements.txt
+openbb>=4.7
