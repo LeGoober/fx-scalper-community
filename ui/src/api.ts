@@ -24,6 +24,15 @@ async function call<T>(method: string, path: string, body?: unknown, init: Reque
   return data as T;
 }
 const get = <T>(p: string) => call<T>("GET", p);
+async function callText(method: string, path: string, body?: unknown): Promise<string> {
+  const res = await fetch(`${API_BASE}${path}`, { method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : null } as RequestInit);
+  const text = await res.text();
+  if (!res.ok) { let msg = res.statusText; try { const d = JSON.parse(text); msg = d.detail ?? d.error ?? msg; } catch { /* plain */ }
+    throw new ApiError(res.status, typeof msg === "string" ? msg : JSON.stringify(msg)); }
+  return text;
+}
 const post = <T>(p: string, b?: unknown) => call<T>("POST", p, b ?? {});
 const put = <T>(p: string, b: unknown) => call<T>("PUT", p, b);
 const del = <T>(p: string) => call<T>("DELETE", p);
@@ -207,17 +216,22 @@ export const strategy = {
   graph: (id: string, version?: number) => get<{ nodes: GraphNode[]; edges: { from: string; to: string;
     kind: "pass" }[] }>(`/strategy/schemas/${id}/graph${qs({ version })}`),
   mermaidUrl: (id: string, version?: number) => `${API_BASE}/strategy/schemas/${id}/mermaid${qs({ version })}`,
+  // Laya: open-weights local judge (Apache-2.0). First test call downloads/loads ~2.3 GB of weights.
+  layaStatus: () => get<{ installed: boolean; model: string; loaded: boolean }>("/strategy/laya/status"),
+  layaTest: () => post<{ ok: boolean; detail: unknown }>("/strategy/laya/test"),
 };
 
 // ─────────────────────────────────────────────────────────── backtests
 export interface BacktestRequest { strategy_id?: string; version?: number; symbol: string; days?: number;
-  start?: Epoch; end?: Epoch; mode?: "code" | "jev" | "compare"; oos_fraction?: number; start_balance?: number;
+  start?: Epoch; end?: Epoch; mode?: "code" | "jev" | "laya" | "ensemble" | "compare" | "compare_all";
+  oos_fraction?: number; start_balance?: number;
   cost?: number; session_exit?: boolean; overrides?: Record<string, unknown> }
 export interface BacktestTrade { entry_time: ISO; exit_time: ISO; entry: number; exit: number; stop: number | null;
   target: number | null; r: number; gross_r: number; cost_r: number; exit_reason: string; bars_held: number;
   direction: Direction; killzone: string; liquidity: string; rr_planned: number; target_name: string;
   flags: string[]; nodes: Record<string, unknown>; side: "BUY" | "SELL" }
 export interface ModeResult { summary: Summary;
+  ensemble: { reports: number; executed: number; avg_confidence: number } | null;
   execution_funnel: { setups: number; passed_filters: number; skipped_position_open: number;
     skipped_daily_cap: number; not_filled: number; missed_target_first: number; filled: number };
   validation: { in_sample?: Summary; out_of_sample?: Summary; oos_starts?: ISO | null;
@@ -231,7 +245,7 @@ export interface BacktestRun { id: string; status: "running" | "done" | "failed"
   finished_at: ISO | null; error: string | null; params: BacktestRequest & Record<string, unknown>;
   strategy: { id: string; version: number; name: string; overrides: unknown }; symbol: string; granularity: number;
   bars: number; from: ISO; to: ISO; setups: number; cost_price: number; contract: string; warnings: string[];
-  results: Record<"code" | "jev", ModeResult>; equity: Record<string, EquityPoint[]>;
+  results: Partial<Record<"code" | "jev" | "laya" | "ensemble", ModeResult>>; equity: Record<string, EquityPoint[]>;
   trades?: Record<string, BacktestTrade[]>; elapsed_s: number }
 export const backtests = {
   run: (b: BacktestRequest) => post<Job<{ id: string; headline: Record<string, Summary> }>>("/backtests/run", b),
@@ -243,7 +257,7 @@ export const backtests = {
 
 // ─────────────────────────────────────────────────────────────── trading
 export interface EngineConfig { strategy_id?: string; version?: number | null; symbols: string[];
-  mode: "paper" | "demo"; evaluation: "code" | "jev"; risk_amount: number; currency?: string }
+  mode: "paper" | "demo"; evaluation: "code" | "jev" | "laya" | "ensemble"; risk_amount: number; currency?: string }
 export interface EngineStatus { running: boolean; started_at: ISO | null; stopped_reason: string | null;
   config: EngineConfig | null; strategy: { id: string; version: number } | null; feed_rtt_ms: number | null;
   broker: { connected: boolean; authorized: boolean; token_mode: string; loginid: string | null;
@@ -265,7 +279,19 @@ export interface Signal { id: string; created_at: ISO; symbol: string; direction
   decision: { passed: boolean; flags: string[]; plan: { direction: Direction; entry: number; stop: number;
     target: number; risk: number; rr: number; target_name: string } | null;
     nodes: { id: string; kind: string; passed: boolean; value: unknown; detail: string; source: string }[];
-    setup: { sweep: string; armed_at: Epoch; killzone: string | null } } }
+    setup: { sweep: string; armed_at: Epoch; killzone: string | null };
+    confidence?: ConfidenceReport | null; risk_amount?: number; expires_at?: Epoch } }
+// One confidence JSON per setup (evaluation="ensemble"): k question schemas × judges (Jev, Laya).
+export interface ConfidenceReport { kind: "fxs.confidence/v1"; created_at: ISO; symbol: string;
+  strategy: { id: string; version: number }; armed_at: Epoch; direction: Direction;
+  plan: { entry: number; stop: number; target: number; rr: number; target_name: string } | null;
+  state: Record<string, unknown>; judges: Record<string, string>; weights: Record<string, number>; schemas: number;
+  validations: { schema: number; judge: string; model: string | null; answers: Record<string, unknown>;
+    latency_ms: number | null; cached: boolean; error: string | null }[];
+  code_nodes: { id: string; passed: boolean; value: unknown; detail: string }[];
+  nodes: Record<string, { label: string; mean: number | null; spread?: number; by_judge?: Record<string, number>;
+    gate: number; passed: boolean; on_fail: "reject" | "flag"; n: number }>;
+  agreement: number; confidence: number; threshold: number; decision: "execute" | "skip"; reasons: string[] }
 export interface Trade { id: string; mode: TradeMode; symbol: string; direction: Direction; contract_type: string;
   stake: number | null; entry_price: number | null; exit_price: number | null; stop_price: number | null;
   target_price: number | null; r_multiple: number | null; pnl: number | null; status: "open" | "closed";
@@ -283,6 +309,12 @@ export const trading = {
   trades: (o: { limit?: number; mode?: TradeMode; status?: "open" | "closed" } = {}) =>
     get<{ trades: Trade[] }>(`/trading/trades${qs(o)}`),
   tradesCsvUrl: (mode?: TradeMode) => `${API_BASE}/trading/trades.csv${qs({ mode })}`,
+  confidence: (signalId: string) => get<ConfidenceReport>(`/trading/signals/${signalId}/confidence`),
+  // Pine Script v6 strategy (entry/SL/TP/risk sizing) for TradingView; returned as plain text.
+  pine: (signalId: string, risk_amount?: number) =>
+    callText("GET", `/trading/signals/${signalId}/pine${qs({ risk_amount })}`),
+  pineForPlan: (p: { symbol: string; direction: Direction; entry: number; stop: number; target: number;
+    risk_amount?: number; signal_time?: Epoch; expires_at?: Epoch }) => callText("POST", "/trading/pine", p),
 };
 
 // ─────────────────────────────────────────────────────────────── metrics

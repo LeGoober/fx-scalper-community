@@ -95,3 +95,19 @@ def schema_mermaid(strategy_id: str, version: int | None = None) -> str:
         return S.mermaid(S.get(strategy_id, version))
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/laya/status", summary="Is Laya (open-weights judge) installed, which checkpoint, is it loaded")
+def laya_status() -> dict:
+    from app.services import laya_client
+    return {"installed": laya_client.installed(), "model": laya_client.model_name(),
+            "loaded": laya_client._model is not None}
+
+
+@router.post("/laya/test", summary="One local Laya call (first call downloads/loads weights: slow)")
+async def laya_test() -> dict:
+    from app.services.laya_client import LayaClient, LayaUnavailable
+    try:
+        return await asyncio.to_thread(LayaClient().self_test)
+    except LayaUnavailable as exc:
+        raise HTTPException(412, str(exc)) from exc

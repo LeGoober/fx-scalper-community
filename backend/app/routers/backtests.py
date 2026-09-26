@@ -21,7 +21,7 @@ class BacktestRequest(BaseModel):
     days: float = Field(90, gt=0, le=3650)
     start: int | None = None
     end: int | None = None
-    mode: Literal["code", "jev", "compare"] = "code"
+    mode: Literal["code", "jev", "laya", "ensemble", "compare", "compare_all"] = "code"
     oos_fraction: float = Field(0.3, ge=0.0, le=0.9)
     start_balance: float = Field(1000.0, gt=0)
     cost: float | None = Field(None, ge=0, description="Round-trip cost in price units; default per symbol")
@@ -39,10 +39,14 @@ def run(body: dict | None = Body(default=None)):
         req = BacktestRequest.model_validate(body)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    if req.mode in {"jev", "compare"}:
+    if req.mode in {"jev", "compare", "compare_all", "ensemble"}:
         from app.services.jev.client import JevClient
-        if not JevClient().available:
+        if not JevClient().available and req.mode != "ensemble":
             raise HTTPException(412, "Jev modes need TYPESAFE_API_KEY. Use mode='code' or add the key.")
+    if req.mode in {"laya", "compare_all"}:
+        from app.services.laya_client import installed
+        if not installed():
+            raise HTTPException(412, "Laya is not installed (pip install laya).")
     end = req.end or int(time.time())
     start = req.start or int(end - req.days * 86400)
     params = engine.BacktestParams(strategy_id=req.strategy_id, version=req.version, symbol=req.symbol, start=start,

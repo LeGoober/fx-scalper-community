@@ -43,7 +43,7 @@ class EngineConfig(BaseModel):
     version: int | None = None
     symbols: list[str] = Field(default_factory=lambda: ["frxEURUSD"])
     mode: Literal["paper", "demo"] = "paper"
-    evaluation: Literal["code", "jev"] = "code"
+    evaluation: Literal["code", "jev", "laya", "ensemble"] = "code"
     risk_amount: float = Field(1.0, gt=0, description="Account currency lost at the planned stop (1R)")
     currency: str = "USD"
 
@@ -117,8 +117,9 @@ class LiveEngine:
         self.cfg = cfg
         self.schema = S.get(cfg.strategy_id, cfg.version)
         self.runtime = S.Runtime(self.schema, cfg.evaluation, cost=0.0)
-        if cfg.evaluation == "jev" and not self.runtime.jev.available:
-            raise RuntimeError("evaluation='jev' needs TYPESAFE_API_KEY.")
+        if not self.runtime.available:
+            raise RuntimeError(f"evaluation='{cfg.evaluation}' has no judge available "
+                               "(Jev needs TYPESAFE_API_KEY; Laya needs `pip install laya`).")
         if cfg.mode == "demo":
             self.broker = DerivClient()
             if not self.broker.token:
@@ -275,7 +276,10 @@ class LiveEngine:
                     "plan": asdict(ev.plan) if ev.plan else None,
                     "nodes": [asdict(r) for r in ev.results],
                     "setup": {"sweep": ev.setup.sweep_level_name, "armed_at": bars.t[ev.setup.armed_at],
-                              "killzone": F.killzone_of(bars.t[ev.setup.mss_index])}}
+                              "killzone": F.killzone_of(bars.t[ev.setup.mss_index])},
+                    "confidence": ev.report, "risk_amount": self.cfg.risk_amount,
+                    "expires_at": S.entry_deadline(bars.t[-1] + self.schema.entry_granularity, self.schema.execution,
+                                                   self.schema.entry_granularity)}
         status = "accepted" if ev.passed else "rejected"
         with db.connect() as conn:
             conn.execute("INSERT INTO signals(id, created_at, symbol, direction, strategy_id, strategy_version, "

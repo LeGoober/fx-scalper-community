@@ -38,6 +38,7 @@ class NodeSpec(BaseModel):
     detector: str | None = None            # code: DETECTORS key
     params: dict = Field(default_factory=dict)
     question: dict | None = None           # jev: {"type", "instructions", "criteria"}
+    question_variants: list[dict] = Field(default_factory=list)  # alternative phrasings for the ensemble
     gate: dict = Field(default_factory=dict)
     fallback: str | None = None            # jev: DETECTORS key used in code mode
     on_fail: Literal["reject", "flag"] = "reject"
@@ -85,6 +86,7 @@ class StrategySchema(BaseModel):
     execution: ExecutionSpec = Field(default_factory=ExecutionSpec)
     execution_citations: list[Citation] = Field(default_factory=list)
     jev_model_pin: str | None = None
+    ensemble: dict = Field(default_factory=lambda: {"weights": {"jev": 0.6, "laya": 0.4}, "threshold": 0.6})
     sources: list[dict] = Field(default_factory=list)
     authored_by: str = ""
     changelog: list[str] = Field(default_factory=list)
@@ -182,10 +184,12 @@ class Evaluation:
     plan: Plan | None
     results: list[NodeResult] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    report: dict | None = None  # ensemble confidence JSON (mode="ensemble")
 
     @property
     def passed(self) -> bool:
-        return self.plan is not None and all(r.passed for r in self.results if not r.id.startswith("flag:"))
+        ok = self.plan is not None and all(r.passed for r in self.results if not r.id.startswith("flag:"))
+        return ok and (self.report is None or self.report["decision"] == "execute")
 
 
 def entry_deadline(armed_epoch: int, ex: ExecutionSpec, granularity: int) -> int:
@@ -431,16 +435,34 @@ def _gate_jev(node: NodeSpec, answer: dict, direction: str) -> tuple[bool, Any, 
 
 
 class Runtime:
-    """Evaluates setups against a schema. mode: 'code' (fallbacks only) or 'jev'."""
+    """Evaluates setups against a schema.
 
-    def __init__(self, schema: StrategySchema, mode: Literal["code", "jev"] = "code", *, cost: float = 0.0) -> None:
+    mode: 'code' (fallback rules only) | 'jev' | 'laya' | 'ensemble' (every question phrasing,
+    answered by Jev and Laya, aggregated into a confidence JSON; see ensemble.py)."""
+
+    JUDGE_MODES = ("jev", "laya", "ensemble")
+
+    def __init__(self, schema: StrategySchema, mode: Literal["code", "jev", "laya", "ensemble"] = "code", *,
+                 cost: float = 0.0) -> None:
         self.schema = schema
         self.mode = mode
         self.cost = cost  # round-trip cost in price units, for the cost_budget node
-        self.jev = None
-        if mode == "jev":
+        self.jev = self.laya = None
+        if mode in ("jev", "ensemble"):
             from app.services.jev.client import JevClient
             self.jev = JevClient(schema.jev_model_pin or None)
+        if mode in ("laya", "ensemble"):
+            from app.services.laya_client import LayaClient
+            self.laya = LayaClient()
+        self.judge = self.jev if mode == "jev" else self.laya if mode == "laya" else None
+
+    @property
+    def available(self) -> bool:
+        if self.mode == "code":
+            return True
+        if self.mode == "ensemble":
+            return bool((self.jev and self.jev.available) or (self.laya and self.laya.available))
+        return bool(self.judge and self.judge.available)
 
     def precheck(self, setup: F.Setup, ctx: Context) -> tuple[Evaluation, list[NodeSpec]]:
         """Run code nodes; return the evaluation so far and the Jev nodes still to ask."""
@@ -460,7 +482,7 @@ class Runtime:
         for node in self.schema.nodes:
             if node.kind == "trigger":
                 continue
-            if node.kind == "jev" and self.mode == "jev":
+            if node.kind == "jev" and self.mode in self.JUDGE_MODES:
                 pending.append(node)
                 continue
             name = node.detector if node.kind == "code" else node.fallback
@@ -497,10 +519,29 @@ class Runtime:
 
     async def evaluate(self, setup: F.Setup, ctx: Context, *, sdk: Any = None) -> Evaluation:
         ev, pending = self.precheck(setup, ctx)
-        if pending and ev.plan is not None:
-            state = setup_facts(setup, ctx, ev.plan, self.schema.entry_granularity)
-            result = await self.jev.aask(state, self.jev_questions(pending), sdk=sdk)
-            ev = self.finalize(ev, pending, result.answers)
+        if not pending or ev.plan is None:
+            return ev
+        state = setup_facts(setup, ctx, ev.plan, self.schema.entry_granularity)
+        if self.mode != "ensemble":
+            kwargs = {"sdk": sdk} if self.mode == "jev" else {}
+            result = await self.judge.aask(state, self.jev_questions(pending), **kwargs)
+            return self.finalize(ev, pending, result.answers)
+        from app.services.ict import ensemble
+        cfg = self.schema.ensemble or {}
+        report = await ensemble.validate(
+            state, pending, setup.direction, {"jev": self.jev, "laya": self.laya},
+            weights=cfg.get("weights"), threshold=float(cfg.get("threshold", 0.6)),
+            code_results=[{"id": r.id, "passed": r.passed, "value": r.value, "detail": r.detail} for r in ev.results],
+            plan={"entry": ev.plan.entry, "stop": ev.plan.stop, "target": ev.plan.target, "rr": ev.plan.rr,
+                  "target_name": ev.plan.target_name},
+            meta={"strategy": {"id": self.schema.id, "version": self.schema.version}, "symbol": ctx.symbol,
+                  "armed_at": ctx.bars.t[setup.armed_at]})
+        for node in pending:
+            nr = report["nodes"].get(node.id, {})
+            self._record(ev, node, NodeResult(node.id, "jev", bool(nr.get("passed")), nr.get("mean"),
+                                              f"ensemble mean {nr.get('mean')} over {nr.get('n', 0)} answers "
+                                              f"(spread {nr.get('spread')})", "ensemble"))
+        ev.report = report
         return ev
 
 

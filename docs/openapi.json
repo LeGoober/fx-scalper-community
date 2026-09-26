@@ -2221,6 +2221,52 @@
     }
    }
   },
+  "/api/strategy/laya/status": {
+   "get": {
+    "tags": [
+     "strategy"
+    ],
+    "summary": "Is Laya (open-weights judge) installed, which checkpoint, is it loaded",
+    "operationId": "laya_status_api_strategy_laya_status_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Laya Status Api Strategy Laya Status Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/strategy/laya/test": {
+   "post": {
+    "tags": [
+     "strategy"
+    ],
+    "summary": "One local Laya call (first call downloads/loads weights: slow)",
+    "operationId": "laya_test_api_strategy_laya_test_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Laya Test Api Strategy Laya Test Post"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/backtests/run": {
    "post": {
     "tags": [
@@ -2707,6 +2753,149 @@
     }
    }
   },
+  "/api/trading/signals/{signal_id}/confidence": {
+   "get": {
+    "tags": [
+     "trading"
+    ],
+    "summary": "The ensemble confidence JSON for one signal",
+    "operationId": "signal_confidence_api_trading_signals__signal_id__confidence_get",
+    "parameters": [
+     {
+      "name": "signal_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Signal Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Signal Confidence Api Trading Signals  Signal Id  Confidence Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/trading/signals/{signal_id}/pine": {
+   "get": {
+    "tags": [
+     "trading"
+    ],
+    "summary": "Pine Script v6 strategy for a signal's entry, stop, target and risk",
+    "operationId": "signal_pine_api_trading_signals__signal_id__pine_get",
+    "parameters": [
+     {
+      "name": "signal_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Signal Id"
+      }
+     },
+     {
+      "name": "risk_amount",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Risk Amount"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "text/plain": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/trading/pine": {
+   "post": {
+    "tags": [
+     "trading"
+    ],
+    "summary": "Pine Script v6 strategy for any plan",
+    "operationId": "pine_from_plan_api_trading_pine_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PinePlan"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "text/plain": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/metrics/performance": {
    "get": {
     "tags": [
@@ -3091,7 +3280,9 @@
       "type": "string",
       "enum": [
        "code",
-       "jev"
+       "jev",
+       "laya",
+       "ensemble"
       ],
       "title": "Evaluation",
       "default": "code"
@@ -3250,6 +3441,68 @@
     },
     "type": "object",
     "title": "LimitsUpdate"
+   },
+   "PinePlan": {
+    "properties": {
+     "symbol": {
+      "type": "string",
+      "title": "Symbol"
+     },
+     "direction": {
+      "type": "string",
+      "pattern": "^(long|short)$",
+      "title": "Direction"
+     },
+     "entry": {
+      "type": "number",
+      "title": "Entry"
+     },
+     "stop": {
+      "type": "number",
+      "title": "Stop"
+     },
+     "target": {
+      "type": "number",
+      "title": "Target"
+     },
+     "risk_amount": {
+      "type": "number",
+      "exclusiveMinimum": 0.0,
+      "title": "Risk Amount",
+      "default": 1.0
+     },
+     "signal_time": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Signal Time"
+     },
+     "expires_at": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Expires At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "symbol",
+     "direction",
+     "entry",
+     "stop",
+     "target"
+    ],
+    "title": "PinePlan"
    },
    "PullRequest": {
     "properties": {

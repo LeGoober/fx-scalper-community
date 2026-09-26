@@ -52,7 +52,7 @@ class BacktestParams:
     start: int
     end: int
     version: int | None = None
-    mode: Literal["code", "jev", "compare"] = "code"
+    mode: Literal["code", "jev", "laya", "ensemble", "compare", "compare_all"] = "code"
     oos_fraction: float = 0.3
     start_balance: float = 1000.0
     cost: float | None = None
@@ -96,6 +96,8 @@ def _dedupe(setups: list[F.Setup]) -> list[F.Setup]:
 
 async def evaluate_all(runtime: S.Runtime, setups: list[F.Setup], ctx: S.Context,
                        progress: Callable[[dict], None] | None = None) -> list[S.Evaluation]:
+    if runtime.mode in ("laya", "ensemble"):
+        return await _evaluate_generic(runtime, setups, ctx, progress)
     staged = [runtime.precheck(s, ctx) for s in setups]
     need = [(i, ev, pending) for i, (ev, pending) in enumerate(staged) if pending and ev.plan is not None]
     out = [ev for ev, _ in staged]
@@ -124,6 +126,29 @@ async def evaluate_all(runtime: S.Runtime, setups: list[F.Setup], ctx: S.Context
 
 FOREX_ZONES = ["london", "ny_am", "ny_lunch", "ny_pm", "asian"]
 INDEX_ZONES = ["ny_am_index", "london", "ny_lunch", "ny_pm", "asian"]
+
+
+async def _evaluate_generic(runtime: S.Runtime, setups: list[F.Setup], ctx: S.Context,
+                            progress: Callable[[dict], None] | None = None) -> list[S.Evaluation]:
+    """Laya / ensemble: Laya runs on local CPU, so keep concurrency low; Jev calls inside the
+    ensemble are network-bound and cached."""
+    sem = asyncio.Semaphore(2)
+    done = 0
+
+    async def one(s: F.Setup) -> S.Evaluation:
+        nonlocal done
+        async with sem:
+            try:
+                ev = await runtime.evaluate(s, ctx)
+            except Exception as exc:
+                ev, _ = runtime.precheck(s, ctx)
+                ev.flags.append(f"judge_error:{type(exc).__name__}")
+                ev.results.append(S.NodeResult("judge", "jev", False, None, str(exc)[:200], runtime.mode))
+        done += 1
+        if progress and done % 25 == 0:
+            progress({"evaluated": done, "total": len(setups)})
+        return ev
+    return list(await asyncio.gather(*(one(s) for s in setups)))
 
 
 def simulate(evals: list[S.Evaluation], bars: F.Bars, schema: S.StrategySchema, cost: float,
@@ -286,7 +311,8 @@ async def run(params: BacktestParams, progress: Callable[[dict], None] | None = 
                         "results are hypothetical. Use a rise_fall variant to test what is executable.")
     if contract == "rise_fall" and (prof.get("rise_fall") or {}).get("payout_r"):
         schema.execution.contract.rise_fall_payout = prof["rise_fall"]["payout_r"]
-    modes = ["code", "jev"] if params.mode == "compare" else [params.mode]
+    modes = {"compare": ["code", "jev"], "compare_all": ["code", "jev", "laya", "ensemble"]}.get(
+        params.mode, [params.mode])
     results = {}
     for mode in modes:
         runtime = S.Runtime(schema, mode, cost=cost)
@@ -294,7 +320,12 @@ async def run(params: BacktestParams, progress: Callable[[dict], None] | None = 
         funnel: dict = {"setups": len(setups)}
         trades = simulate(evals, bars, schema, cost, params.session_exit, funnel, params.symbol)
         rs = [t["r"] for t in trades]
+        reports = [e.report for e in evals if e.report]
         results[mode] = {
+            "ensemble": ({"reports": len(reports),
+                          "executed": sum(1 for r in reports if r["decision"] == "execute"),
+                          "avg_confidence": round(sum(r["confidence"] for r in reports) / len(reports), 4)}
+                         if reports else None),
             "summary": metrics.summarise(rs),
             "execution_funnel": funnel,
             "validation": metrics.split(trades, params.oos_fraction),
