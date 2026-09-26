@@ -102,3 +102,40 @@ def test_pine_endpoint(client):
     assert r.status_code == 200 and "strategy.short" in r.text
     assert client.post("/api/trading/pine", json={"symbol": "x", "direction": "short", "entry": 1, "stop": 0.5,
                                                   "target": 0.2}).status_code == 422
+
+
+def test_laya_client_normalises_and_batches_with_cache(monkeypatch):
+    from app.services import laya_client as L
+
+    class FakeAgent:
+        def __init__(self):
+            self.batches = 0
+
+        def _one(self, i):
+            return {"answers": {"b": {"type": "choice", "choice": "x", "probabilities": {"x": 0.7, "y": 0.3},
+                                      "confidence": 0.4},
+                                "s": {"type": "score", "score": 2.0, "probabilities": {"0": 0.1, "1": 0.2, "2": 0.7},
+                                      "confidence": 0.5},
+                                "n": {"type": "noul", "noul": 0.25 + i / 100}},
+                    "usage": {"input_tokens": 50}}
+
+        def predict(self, state, questions):
+            return self._one(0)
+
+        def predict_batch(self, states, questions, batch_size=16):
+            self.batches += 1
+            return [self._one(i) for i in range(len(states))]
+
+    agent = FakeAgent()
+    monkeypatch.setattr(L, "_load", lambda: agent)
+    qs = {"b": {"type": "choice", "instructions": "?", "criteria": {"x": "X", "y": "Y"}},
+          "s": {"type": "score", "instructions": "?", "criteria": ["a", "b", "c"]},
+          "n": {"type": "noul", "instructions": "?"}}
+    client = L.LayaClient()
+    first = client.ask_batch([{"i": 1}, {"i": 2}, {"i": 3}], qs)
+    assert agent.batches == 1 and len(first) == 3 and not first[0].cached
+    assert first[0].answers["s"]["score_norm"] == 1.0 and first[1].answers["n"]["noul"] == 0.26
+    again = client.ask_batch([{"i": 1}, {"i": 2}, {"i": 3}], qs)
+    assert agent.batches == 1 and all(r.cached for r in again)          # served from cache
+    single = asyncio.run(client.aask({"i": 2}, qs))
+    assert single.cached and single.answers == first[1].answers         # same cache as the batch path

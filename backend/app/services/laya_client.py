@@ -19,6 +19,10 @@ from app.services.jev.client import JevResult, _cache_get, _cache_put, cache_key
 
 _model: Any = None
 _lock = threading.Lock()
+# One inference at a time: torch already uses every CPU core per call, and parallel calls
+# thrash each other (measured: ~250 s per call with 12 concurrent vs a few seconds serial).
+_infer_lock = threading.Lock()
+BATCH_SIZE = 16
 
 
 class LayaUnavailable(RuntimeError):
@@ -91,15 +95,45 @@ class LayaClient:
                 import json
                 return JevResult(json.loads(row["response_json"]), row["model"], row["input_tokens"], 0.0, True)
         agent = _load()
-        started = time.perf_counter()
-        raw = agent.predict(state, questions)
-        answers = {name: _normalise(raw["answers"][name], spec) for name, spec in questions.items()}
-        usage = raw.get("usage") or {}
-        tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
-        result = JevResult(answers, self.model, tokens, round((time.perf_counter() - started) * 1000, 1))
+        with _infer_lock:
+            started = time.perf_counter()
+            raw = agent.predict(state, questions)
+            elapsed = round((time.perf_counter() - started) * 1000, 1)
+        result = self._result(raw, questions, elapsed)
         if self.use_cache:
             _cache_put(key, result)
         return result
+
+    def _result(self, raw: dict, questions: dict[str, dict], latency_ms: float) -> JevResult:
+        answers = {name: _normalise(raw["answers"][name], spec) for name, spec in questions.items()}
+        usage = raw.get("usage") or {}
+        tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
+        return JevResult(answers, self.model, tokens, latency_ms)
+
+    def ask_batch(self, states: list[Any], questions: dict[str, dict]) -> list[JevResult]:
+        """Many states, one question set, batched through Laya's predict_batch; fills the same cache."""
+        import json
+        keys = [cache_key(self.model, s, questions) for s in states]
+        out: list[JevResult | None] = [None] * len(states)
+        misses = []
+        for i, k in enumerate(keys):
+            row = _cache_get(k) if self.use_cache else None
+            if row is not None:
+                out[i] = JevResult(json.loads(row["response_json"]), row["model"], row["input_tokens"], 0.0, True)
+            else:
+                misses.append(i)
+        if misses:
+            agent = _load()
+            with _infer_lock:
+                started = time.perf_counter()
+                raws = agent.predict_batch([states[i] for i in misses], questions, batch_size=BATCH_SIZE)
+                per_item = round((time.perf_counter() - started) * 1000 / len(misses), 1)
+            for i, raw in zip(misses, raws):
+                res = self._result(raw, questions, per_item)
+                out[i] = res
+                if self.use_cache:
+                    _cache_put(keys[i], res)
+        return [r for r in out if r is not None]
 
     async def aask(self, state: Any, questions: dict[str, dict], **_: Any) -> JevResult:
         return await asyncio.to_thread(self.ask, state, questions)
