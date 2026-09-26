@@ -105,12 +105,16 @@ async def backfill(symbol: str, granularity: int, start: int, end: int | None = 
                         symbol, granularity, start=window[0], end=window[1], count=MAX_PER_REQUEST)
                     break
                 except DerivError as exc:
-                    limited = "rate limit" in str(exc).lower() or (exc.code or "").lower() == "ratelimit"
+                    msg = str(exc).lower()
+                    limited = "rate limit" in msg or (exc.code or "").lower() == "ratelimit"
+                    transient = limited or any(w in msg for w in ("timed out", "connection", "closed", "lost"))
                     stats["rate_limited"] += int(limited)
-                    if attempt == 5:
+                    if attempt == 5 or not transient:  # e.g. unknown symbol: retrying cannot help
                         stats["errors"].append(f"{window[0]}-{window[1]}: {exc}")
-                    else:
-                        await asyncio.sleep(RATE_LIMIT_PAUSE * (attempt + 1) if limited else 1.5 * (attempt + 1))
+                        if not transient and not stats["fetched"] and len(stats["errors"]) >= 3:
+                            raise DerivError(f"Backfill aborted for {symbol}: {exc}", exc.code) from exc
+                        break
+                    await asyncio.sleep(RATE_LIMIT_PAUSE * (attempt + 1) if limited else 1.5 * (attempt + 1))
             # adjust_start_time can shift into the previous window; keep only this window's bars
             candles = [c for c in candles if window[0] <= int(c["epoch"]) <= window[1]]
             stats["fetched"] += len(candles)

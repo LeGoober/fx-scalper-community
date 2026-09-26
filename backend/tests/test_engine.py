@@ -111,11 +111,19 @@ def test_tradingview_webhook_requires_secret_and_dedupes(client, monkeypatch):
     assert client.post("/api/webhooks/tradingview", json=body).json()["status"] == "duplicate"
 
 
-def test_background_job_through_api_runs_to_completion(client):
+def test_background_job_through_api_runs_to_completion(client, monkeypatch):
     """Regression: sync endpoints run in a worker thread; starting a job there used to 500."""
     import random
     import time as _t
-    from app.services.deriv import history
+    from app.services.deriv import history, profile
+
+    async def no_network_backfill(*a, **k):  # keep the test offline; history is seeded below
+        return {"fetched": 0}
+
+    async def no_network_calibrate(*a, **k):
+        return {}
+    monkeypatch.setattr(history, "backfill", no_network_backfill)
+    monkeypatch.setattr(profile, "calibrate", no_network_calibrate)
     rng, price, candles = random.Random(3), 100.0, []
     for i in range(3000):
         o = price

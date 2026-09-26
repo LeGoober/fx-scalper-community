@@ -36,10 +36,22 @@ DEFAULT_COST = {"frxEURUSD": 0.00023, "frxGBPUSD": 0.00027, "frxUSDJPY": 0.03, "
                 "OTC_NDX": 6.0, "OTC_SPC": 1.3, "OTC_DJI": 9.0}
 
 
+FALLBACK_COMMISSION_RATE = 0.0002  # 2 bps of notional: Deriv's measured multiplier commission
+
+
 def cost_for(symbol: str) -> float:
+    """Measured cost (calibrated profile) > known default > 2 bps of the latest price. Never zero:
+    a zero-cost backtest flatters every strategy."""
     from app.services.deriv import profile
     measured = profile.get(symbol).get("cost_price")
-    return float(measured) if measured else DEFAULT_COST.get(symbol, 0.0)
+    if measured:
+        return float(measured)
+    if symbol in DEFAULT_COST:
+        return DEFAULT_COST[symbol]
+    with db.connect() as conn:
+        row = conn.execute("SELECT close FROM candles WHERE symbol = ? ORDER BY epoch DESC LIMIT 1",
+                           (symbol,)).fetchone()
+    return float(row[0]) * FALLBACK_COMMISSION_RATE if row else 0.0
 
 
 JEV_CONCURRENCY = 8

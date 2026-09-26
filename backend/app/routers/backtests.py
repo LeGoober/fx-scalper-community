@@ -31,6 +31,33 @@ class BacktestRequest(BaseModel):
                           '{"nodes": {"killzone": {"params": {"zones": ["london", "ny_am"]}}}}')
 
 
+async def ensure_ready(symbol: str, start: int, end: int, job: jobs.Job) -> None:
+    """Backfill missing 1-minute history and measure Deriv costs before backtesting a symbol.
+
+    Without this, a never-backfilled symbol fails ("backfill first"), and a symbol with no
+    measured contract profile would be simulated with zero trading costs."""
+    import asyncio
+    from app.services.deriv import history, profile
+    # Always fill whatever part of the range is missing (stored windows are skipped, so this is cheap
+    # when the history is already complete). A partial history would silently shorten the test.
+    job.update(stage="backfilling", note=f"checking {symbol} 1-minute history for the requested range")
+    try:
+        await history.backfill(symbol, 60, start, end, progress=lambda p: job.update(stage="backfilling", **p))
+    except Exception as exc:  # offline or Deriv down: test whatever is stored, and say so
+        job.update(stage="backfilling", note=f"backfill failed ({type(exc).__name__}); using stored history only")
+    with db.connect() as conn:
+        stored = conn.execute("SELECT COUNT(*) FROM candles WHERE symbol = ? AND granularity = 60 "
+                              "AND epoch BETWEEN ? AND ?", (symbol, start, end)).fetchone()[0]
+    if not stored:
+        raise ValueError(f"No 1-minute history for {symbol} in this range (Deriv returned none).")
+    if not profile.get(symbol).get("calibrated_at"):
+        job.update(stage="calibrating", note=f"measuring Deriv contract costs for {symbol}")
+        try:
+            await asyncio.wait_for(profile.calibrate([symbol]), timeout=60)
+        except Exception as exc:  # best-effort: fall back to default costs, and say so
+            job.update(stage="calibrating", note=f"cost calibration failed ({type(exc).__name__}); using default costs")
+
+
 @router.post("/run", summary="Start a backtest (background job). An empty body runs the legacy 3-scenario check.")
 def run(body: dict | None = Body(default=None)):
     if not body:
@@ -55,6 +82,7 @@ def run(body: dict | None = Body(default=None)):
                                    extra={"overrides": req.overrides} if req.overrides else {})
 
     async def job_fn(job: jobs.Job) -> dict:
+        await ensure_ready(req.symbol, start, end, job)
         result = await engine.run_and_store(params, progress=lambda p: job.update(**p))
         return {"id": result["id"], "headline": {m: r["summary"] for m, r in result["results"].items()}}
     return jobs.start("backtest", req.model_dump() | {"start": start, "end": end}, job_fn).to_dict()
