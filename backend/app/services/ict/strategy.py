@@ -531,6 +531,7 @@ class Runtime:
         report = await ensemble.validate(
             state, pending, setup.direction, {"jev": self.jev, "laya": self.laya},
             weights=cfg.get("weights"), threshold=float(cfg.get("threshold", 0.6)),
+            schemas_per_judge=cfg.get("schemas_per_judge"),
             code_results=[{"id": r.id, "passed": r.passed, "value": r.value, "detail": r.detail} for r in ev.results],
             plan={"entry": ev.plan.entry, "stop": ev.plan.stop, "target": ev.plan.target, "rr": ev.plan.rr,
                   "target_name": ev.plan.target_name},

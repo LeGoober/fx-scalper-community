@@ -110,7 +110,8 @@ class LayaClient:
         tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
         return JevResult(answers, self.model, tokens, latency_ms)
 
-    def ask_batch(self, states: list[Any], questions: dict[str, dict]) -> list[JevResult]:
+    def ask_batch(self, states: list[Any], questions: dict[str, dict],
+                  progress: Any = None) -> list[JevResult]:
         """Many states, one question set, batched through Laya's predict_batch; fills the same cache."""
         import json
         keys = [cache_key(self.model, s, questions) for s in states]
@@ -122,17 +123,22 @@ class LayaClient:
                 out[i] = JevResult(json.loads(row["response_json"]), row["model"], row["input_tokens"], 0.0, True)
             else:
                 misses.append(i)
-        if misses:
-            agent = _load()
+        agent = _load() if misses else None
+        # Chunked so every BATCH_SIZE states land in the cache: progress survives interruption
+        # and a long run can be resumed.
+        for c in range(0, len(misses), BATCH_SIZE):
+            chunk = misses[c:c + BATCH_SIZE]
             with _infer_lock:
                 started = time.perf_counter()
-                raws = agent.predict_batch([states[i] for i in misses], questions, batch_size=BATCH_SIZE)
-                per_item = round((time.perf_counter() - started) * 1000 / len(misses), 1)
-            for i, raw in zip(misses, raws):
+                raws = agent.predict_batch([states[i] for i in chunk], questions, batch_size=BATCH_SIZE)
+                per_item = round((time.perf_counter() - started) * 1000 / len(chunk), 1)
+            for i, raw in zip(chunk, raws):
                 res = self._result(raw, questions, per_item)
                 out[i] = res
                 if self.use_cache:
                     _cache_put(keys[i], res)
+            if progress:
+                progress(min(c + BATCH_SIZE, len(misses)), len(misses), per_item)
         return [r for r in out if r is not None]
 
     async def aask(self, state: Any, questions: dict[str, dict], **_: Any) -> JevResult:

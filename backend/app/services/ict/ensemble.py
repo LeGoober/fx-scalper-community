@@ -49,7 +49,7 @@ def gate_of(node: Any) -> float:
 async def validate(state: dict, nodes: list, direction: str, judges: dict[str, Any], *,
                    weights: dict[str, float] | None = None, threshold: float = 0.6,
                    code_results: list[dict] | None = None, plan: dict | None = None,
-                   meta: dict | None = None) -> dict:
+                   meta: dict | None = None, schemas_per_judge: dict[str, int] | None = None) -> dict:
     weights = weights or {"jev": 0.6, "laya": 0.4}
     active = {name: j for name, j in judges.items() if j is not None and getattr(j, "available", True)}
     if not active:
@@ -65,7 +65,9 @@ async def validate(state: dict, nodes: list, direction: str, judges: dict[str, A
             return {"schema": i + 1, "judge": name, "model": None, "answers": {}, "latency_ms": None,
                     "cached": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    validations = await asyncio.gather(*(run(i, n, j) for i in range(len(schemas)) for n, j in active.items()))
+    limits = schemas_per_judge or {}  # e.g. {"laya": 1}: a slow local judge answers only the primary phrasing
+    validations = await asyncio.gather(*(run(i, n, j) for n, j in active.items()
+                                         for i in range(min(len(schemas), limits.get(n, len(schemas))))))
     node_report: dict[str, dict] = {}
     for node in nodes:
         pts = [(v["judge"], value_of(v["answers"][node.id], node, direction))

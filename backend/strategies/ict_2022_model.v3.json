@@ -439,7 +439,8 @@
     "v2 (2026-09-23): premium/discount measured on the previous-day dealing range (the daily range cited in Ep. 10 @4:09) instead of the displacement leg.",
     "v2 (2026-09-23): htf_draw fallback uses the untaken opposing previous-day extreme (v1's 'follow the previous close' contradicted the daily-discount rule); Jev now sees whether PDH/PDL already traded today.",
     "v3 (2026-09-23): rules re-derived from the top Jev-ranked passages. Premium/discount back on the new swing (Ep. 2 @47:22); new opening-price node (Ep. 10 @17:59, Ep. 16 @15:24); entry at the FVG edge (Ep. 20), 5-pip stop buffer (Ep. 17), entries pulled at 11:30 NY (Ep. 18); Jev pinned to jev-1.13.0.",
-    "v3 (2026-09-26): added two question_variants per judge node and ensemble weights (Jev 0.6 / Laya 0.4, threshold 0.6); code and single-judge modes are unchanged."
+    "v3 (2026-09-26): added two question_variants per judge node and ensemble weights (Jev 0.6 / Laya 0.4, threshold 0.6); code and single-judge modes are unchanged.",
+    "v3 (2026-09-26): ensemble asks Laya only the primary phrasing (schemas_per_judge laya=1): Laya takes ~18 s per setup on this CPU; Jev still answers all phrasings."
   ],
   "execution_citations": [
     {
@@ -472,6 +473,9 @@
       "jev": 0.6,
       "laya": 0.4
     },
-    "threshold": 0.6
+    "threshold": 0.6,
+    "schemas_per_judge": {
+      "laya": 1
+    }
   }
 }

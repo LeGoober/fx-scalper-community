@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import time
 from statistics import mean
 
@@ -41,18 +42,10 @@ def _split(rows: list[dict], key: str, threshold: float) -> dict:
             "edge_r": round(mean(liked) - mean(other), 4) if liked and other else None}
 
 
-async def study(symbol: str, days: int, version: int, overrides: dict | None, judges: list[str]) -> dict:
-    end = int(time.time())
-    schema = engine.apply_overrides(S.get("ict_2022_model", version), overrides)
-    bars, scanner, ctx = engine.prepare(schema, symbol, end - days * 86400, end)
-    setups = engine._dedupe(scanner.run())
-    cost = engine.cost_for(symbol)
-    rt = S.Runtime(schema, "ensemble", cost=cost)
-    clients = {"jev": rt.jev if "jev" in judges else None, "laya": rt.laya if "laya" in judges else None}
-    jev_nodes = [n for n in schema.nodes if n.kind == "jev"]
+def _candidates(setups, bars, ctx, schema: S.StrategySchema, cost: float, jev_nodes: list) -> list[tuple[dict, dict]]:
+    """Killzone setups with a tradeable plan and a simulated outcome, plus code-fallback scores and facts."""
     kz_node = next(n for n in schema.nodes if n.id == "killzone")
-    cfg = schema.ensemble or {}
-    candidates = []
+    out = []
     for s in setups:
         plan = S.build_plan(s, ctx, schema.execution)
         if plan is None:
@@ -70,19 +63,41 @@ async def study(symbol: str, days: int, version: int, overrides: dict | None, ju
             if n.fallback:
                 res = S.DETECTORS[n.fallback](s, ctx, plan, n.params | n.gate | {"_cost": cost})
                 row[f"code:{n.id}"] = 1.0 if res.passed else 0.0
-        candidates.append((row, S.setup_facts(s, ctx, plan, schema.entry_granularity)))
+        out.append((row, S.setup_facts(s, ctx, plan, schema.entry_granularity)))
+    return out
 
+
+async def study(symbol: str, days: int, version: int, overrides: dict | None, judges: list[str],
+                sample: int | None = None, laya_schemas: int | None = None, seed: int = 11) -> dict:
+    end = int(time.time())
+    schema = engine.apply_overrides(S.get("ict_2022_model", version), overrides)
+    bars, scanner, ctx = engine.prepare(schema, symbol, end - days * 86400, end)
+    setups = engine._dedupe(scanner.run())
+    cost = engine.cost_for(symbol)
+    rt = S.Runtime(schema, "ensemble", cost=cost)
+    clients = {"jev": rt.jev if "jev" in judges else None, "laya": rt.laya if "laya" in judges else None}
+    jev_nodes = [n for n in schema.nodes if n.kind == "jev"]
+    cfg = schema.ensemble or {}
+    candidates = _candidates(setups, bars, ctx, schema, cost, jev_nodes)
+
+    if sample and len(candidates) > sample:
+        import random
+        candidates = random.Random(seed).sample(candidates, sample)
+    limits = {"laya": laya_schemas} if laya_schemas else None
     if clients["laya"] is not None and candidates:
         # Pre-score every phrasing with Laya in batches (CPU-bound; one batched pass per schema),
         # so the ensemble below reads Laya answers from the cache instead of 1-by-1 inference.
-        for qs in ensemble.schemas_for(jev_nodes):
-            await asyncio.to_thread(clients["laya"].ask_batch, [f for _, f in candidates], qs)
+        for qs in ensemble.schemas_for(jev_nodes)[:laya_schemas or None]:
+            await asyncio.to_thread(clients["laya"].ask_batch, [f for _, f in candidates], qs,
+                                    lambda d, n, ms: print(f"  laya {d}/{n} ({ms:.0f} ms/state)", file=sys.stderr,
+                                                           flush=True))
     sem = asyncio.Semaphore(8)
 
     async def score(row: dict, facts: dict) -> None:
         async with sem:
             rep = await ensemble.validate(facts, jev_nodes, row["direction"], clients,
-                                          weights=cfg.get("weights"), threshold=float(cfg.get("threshold", 0.6)))
+                                          weights=cfg.get("weights"), threshold=float(cfg.get("threshold", 0.6)),
+                                          schemas_per_judge=limits)
         for nid, nr in rep["nodes"].items():
             for judge, v in (nr.get("by_judge") or {}).items():
                 row[f"{judge}:{nid}"] = v
@@ -93,6 +108,7 @@ async def study(symbol: str, days: int, version: int, overrides: dict | None, ju
     await asyncio.gather(*(score(r, f) for r, f in candidates))
     rows = [r for r, _ in candidates]
     out = {"symbol": symbol, "contract": schema.execution.contract.type, "setups_scored": len(rows),
+           "sample": sample, "laya_schemas": laya_schemas,
            "judges": [j for j, c in clients.items() if c is not None],
            "baseline": metrics.summarise([r["r"] for r in rows], bootstrap=1000), "judgments": {}}
     for n in jev_nodes:
@@ -111,10 +127,13 @@ def main() -> None:
     p.add_argument("--days", type=int, default=365)
     p.add_argument("--version", type=int, default=3)
     p.add_argument("--judges", nargs="+", default=["jev", "laya"], choices=["jev", "laya"])
+    p.add_argument("--sample", type=int, help="Random sample of setups per symbol")
+    p.add_argument("--laya-schemas", type=int, help="Phrasings Laya answers (1 = primary only; Laya is slow on CPU)")
     a = p.parse_args()
     for sym in a.symbols:
         ov = RF if sym.startswith("OTC_") else None
-        print(json.dumps(asyncio.run(study(sym, a.days, a.version, ov, a.judges)), default=str), flush=True)
+        res = asyncio.run(study(sym, a.days, a.version, ov, a.judges, a.sample, a.laya_schemas))
+        print(json.dumps(res, default=str), flush=True)
 
 
 if __name__ == "__main__":
