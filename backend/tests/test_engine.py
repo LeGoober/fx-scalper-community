@@ -98,7 +98,7 @@ def test_demo_order_blocked_on_real_account(monkeypatch):
     monkeypatch.setattr(E.profile, "get", lambda symbol=None: {"multipliers": [100]})
     pos = E.Position("t1", "frxEURUSD", "long", 1.1, 1.098, 1.105, 2.0, 0, None, mode="demo")
     with pytest.raises(risk.RiskBlocked):
-        asyncio.run(eng._demo_order("frxEURUSD", pos))
+        asyncio.run(eng._broker_order("frxEURUSD", pos))
 
 
 def test_tradingview_webhook_requires_secret_and_dedupes(client, monkeypatch):
@@ -180,3 +180,57 @@ def test_accepted_signal_stores_ticket():
     with db.connect() as conn:
         decision = db.loads(db.row(conn, "SELECT decision_json FROM signals")["decision_json"], {})
     assert decision["ticket"]["take_profit"] == 5.0 and decision["ticket"]["direction"] == "Up"
+
+
+def test_real_mode_refuses_to_start_unless_enabled_and_armed(monkeypatch):
+    eng = E.LiveEngine()
+    cfg = E.EngineConfig(symbols=["frxEURUSD"], mode="real", risk_amount=1.0)
+    with pytest.raises(risk.RiskBlocked, match="COMMUNITY_ALLOW_REAL_TRADING"):
+        asyncio.run(eng.start(cfg))
+    monkeypatch.setenv("COMMUNITY_ALLOW_REAL_TRADING", "true")
+    with pytest.raises(risk.RiskBlocked, match="armed"):   # .env alone is not enough
+        asyncio.run(eng.start(cfg))
+    risk.arm_real("I ACCEPT REAL MONEY RISK")
+    with pytest.raises(risk.RiskBlocked, match="max_risk_per_trade"):
+        asyncio.run(eng.start(cfg.model_copy(update={"risk_amount": 50.0})))
+    assert not eng.running
+
+
+def test_orders_refuse_account_of_the_wrong_kind(monkeypatch):
+    """A real-mode engine never trades a demo account, and a demo-mode engine never trades a real one."""
+    monkeypatch.setattr(E.profile, "get", lambda symbol=None: {"multipliers": [100]})
+
+    class Broker:
+        connected = True
+
+        def __init__(self, virtual):
+            self.is_virtual = virtual
+
+        async def proposal(self, **fields):
+            return {"id": "p1", "ask_price": fields["amount"], "spot": 1.1}
+
+        async def buy(self, *a):
+            raise AssertionError("must not buy")
+    pos = E.Position("t1", "frxEURUSD", "long", 1.1, 1.098, 1.105, 2.0, 0, None)
+    real = _engine("demo")
+    real.cfg = real.cfg.model_copy(update={"mode": "real"})
+    real.broker = Broker(True)
+    with pytest.raises(risk.RiskBlocked, match="not verified as real"):
+        asyncio.run(real._broker_order("frxEURUSD", pos))
+    demo = _engine("demo")
+    demo.broker = Broker(False)
+    with pytest.raises(risk.RiskBlocked, match="not verified as demo"):
+        asyncio.run(demo._broker_order("frxEURUSD", pos))
+
+
+def test_disarm_stops_a_real_engine(client, monkeypatch):
+    stopped = {}
+
+    async def fake_stop(reason="stopped"):
+        stopped["reason"] = reason
+        return {}
+    monkeypatch.setattr(E, "stop", fake_stop)
+    monkeypatch.setattr(E.ENGINE, "cfg", E.EngineConfig(mode="real"))
+    monkeypatch.setattr(type(E.ENGINE), "running", property(lambda self: True))
+    assert client.post("/api/risk/real/disarm").status_code == 200
+    assert stopped["reason"] == "real trading disarmed"

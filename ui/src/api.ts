@@ -257,7 +257,7 @@ export const backtests = {
 
 // ─────────────────────────────────────────────────────────────── trading
 export interface EngineConfig { strategy_id?: string; version?: number | null; symbols: string[];
-  mode: "paper" | "demo"; evaluation: "code" | "jev" | "laya" | "ensemble"; risk_amount: number; currency?: string }
+  mode: "paper" | "demo" | "real"; evaluation: "code" | "jev" | "laya" | "ensemble"; risk_amount: number; currency?: string }
 export interface EngineStatus { running: boolean; started_at: ISO | null; stopped_reason: string | null;
   config: EngineConfig | null; strategy: { id: string; version: number } | null; feed_rtt_ms: number | null;
   broker: { connected: boolean; authorized: boolean; token_mode: string; loginid: string | null;

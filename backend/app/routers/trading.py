@@ -20,7 +20,8 @@ def engine_status() -> dict:
     return engine.status()
 
 
-@router.post("/engine/start", summary="Start the engine (paper = simulated fills; demo = Deriv demo orders)")
+@router.post("/engine/start", summary="Start the engine (paper = simulated fills; demo = Deriv demo orders; "
+                                      "real = real orders, only when enabled in .env and armed)")
 async def engine_start(cfg: engine.EngineConfig) -> dict:
     try:
         return await engine.start(cfg)

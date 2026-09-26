@@ -42,7 +42,7 @@ class EngineConfig(BaseModel):
     strategy_id: str = "ict_2022_model"
     version: int | None = None
     symbols: list[str] = Field(default_factory=lambda: ["frxEURUSD"])
-    mode: Literal["paper", "demo"] = "paper"
+    mode: Literal["paper", "demo", "real"] = "paper"
     evaluation: Literal["code", "jev", "laya", "ensemble"] = "code"
     risk_amount: float = Field(1.0, gt=0, description="Account currency lost at the planned stop (1R)")
     currency: str = "USD"
@@ -120,15 +120,26 @@ class LiveEngine:
         if not self.runtime.available:
             raise RuntimeError(f"evaluation='{cfg.evaluation}' has no judge available "
                                "(Jev needs TYPESAFE_API_KEY; Laya needs `pip install laya`).")
-        if cfg.mode == "demo":
-            self.broker = DerivClient()
+        if cfg.mode in {"demo", "real"}:
+            want_virtual = cfg.mode == "demo"
+            if not want_virtual:
+                if not risk.real_trading_status()["effective"]:
+                    raise risk.RiskBlocked("Real mode needs COMMUNITY_ALLOW_REAL_TRADING=true in .env (edited by hand) "
+                                           "and real trading armed in Settings → Risk (typed confirmation).")
+                if cfg.risk_amount > risk.limits()["max_risk_per_trade"]:
+                    raise risk.RiskBlocked(f"Risk per trade {cfg.risk_amount} is above max_risk_per_trade "
+                                           f"{risk.limits()['max_risk_per_trade']} (Settings → Risk).")
+            self.broker = DerivClient(account_mode=cfg.mode)
             if not self.broker.token:
-                raise RuntimeError("Demo mode needs a Deriv API token (Settings → API keys).")
+                raise RuntimeError(f"{cfg.mode.capitalize()} mode needs a Deriv API token (Settings → API keys).")
             info = await self.broker.connect()
-            if self.broker.is_virtual is not True:
+            if self.broker.is_virtual is not want_virtual:
                 await self.broker.close()
                 self.broker = None
-                raise risk.RiskBlocked(f"Refusing to start: account {info.get('loginid')} is not verified as demo.")
+                raise risk.RiskBlocked(f"Refusing to start: account {info.get('loginid')} is not verified as "
+                                       f"{cfg.mode}.")
+            if info.get("currency"):
+                self.cfg = cfg = cfg.model_copy(update={"currency": info["currency"]})
             for sym in cfg.symbols:
                 prof = profile.get(sym)
                 if not prof:
@@ -348,9 +359,9 @@ class LiveEngine:
                        self._session_exit_ts(ts), mode=cfg.mode)
         meta = {"signal_id": p.signal_id, "planned_entry": p.plan.entry, "rr_planned": p.plan.rr,
                 "ticket": self.deriv_ticket(st.symbol, pos.direction, fill, pos.stop, pos.target)}
-        if cfg.mode == "demo":
+        if cfg.mode in {"demo", "real"}:
             try:
-                order = await self._demo_order(st.symbol, pos)
+                order = await self._broker_order(st.symbol, pos)
             except (risk.RiskBlocked, DerivError, ValueError) as exc:
                 events.publish("trade.rejected", {"symbol": st.symbol, "reason": str(exc)}, level="warning",
                                message=f"{st.symbol} order not placed: {exc}")
@@ -399,7 +410,7 @@ class LiveEngine:
         except Exception:
             pass
 
-    # --------------------------------------------------------- Deriv demo
+    # --------------------------------------------------------- Deriv orders (demo or real)
     def _choose_multiplier(self, symbol: str, entry: float, stop: float) -> tuple[int, float]:
         accepted = profile.get(symbol).get("multipliers") or []
         if not accepted:
@@ -440,10 +451,13 @@ class LiveEngine:
         except RuntimeError:  # no event loop (tests, scripts)
             pass
 
-    async def _demo_order(self, symbol: str, pos: Position) -> dict:
+    async def _broker_order(self, symbol: str, pos: Position) -> dict:
         if self.broker is None or not self.broker.connected:
-            self.broker = DerivClient()
+            self.broker = DerivClient(account_mode=self.cfg.mode)
             await self.broker.connect()
+        want_virtual = self.cfg.mode != "real"
+        if self.broker.is_virtual is not want_virtual:  # never let a demo run reach a real account, or vice versa
+            raise risk.RiskBlocked(f"Connected account is not verified as {'demo' if want_virtual else 'real'}.")
         contract = self.schema.execution.contract
         long = pos.direction == "long"
         if contract.type == "rise_fall":

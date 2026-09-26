@@ -136,9 +136,13 @@ def arm_real(body: ArmReal) -> dict:
         raise HTTPException(403, str(exc)) from exc
 
 
-@router.post("/risk/real/disarm")
-def disarm_real() -> dict:
-    return risk.disarm_real()
+@router.post("/risk/real/disarm", summary="Disarm real trading (also stops the engine if it is running in real mode)")
+async def disarm_real() -> dict:
+    status = risk.disarm_real()
+    from app.services import engine
+    if engine.ENGINE.running and engine.ENGINE.cfg.mode == "real":
+        await engine.stop(reason="real trading disarmed")
+    return status
 
 
 # --------------------------------------------------------------- jobs/events
