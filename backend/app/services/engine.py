@@ -280,6 +280,9 @@ class LiveEngine:
                     "confidence": ev.report, "risk_amount": self.cfg.risk_amount,
                     "expires_at": S.entry_deadline(bars.t[-1] + self.schema.entry_granularity, self.schema.execution,
                                                    self.schema.entry_granularity)}
+        if ev.plan:  # how to place it by hand on Deriv (shown in the dashboard and alerts)
+            decision["ticket"] = self.deriv_ticket(st.symbol, ev.plan.direction, ev.plan.entry, ev.plan.stop,
+                                                   ev.plan.target)
         status = "accepted" if ev.passed else "rejected"
         with db.connect() as conn:
             conn.execute("INSERT INTO signals(id, created_at, symbol, direction, strategy_id, strategy_version, "
@@ -297,6 +300,8 @@ class LiveEngine:
         if st.position or st.pending or st.trades_today.get(day, 0) >= ex.max_trades_per_day:
             return
         expires = S.entry_deadline(bars.t[-1] + self.schema.entry_granularity, ex, self.schema.entry_granularity)
+        from app.services import notify
+        self._notify(notify.notify_setup, st.symbol, decision["ticket"], expires)
         st.pending.append(Pending(f"po-{uuid.uuid4().hex[:8]}", st.symbol, signal_id, ev.plan, expires, bars.t[-1]))
 
     # --------------------------------------------------------- execution
@@ -341,7 +346,8 @@ class LiveEngine:
         fill = price if (price < p.plan.entry if p.plan.direction == "long" else price > p.plan.entry) else p.plan.entry
         pos = Position(trade_id, st.symbol, p.plan.direction, fill, p.plan.stop, p.plan.target, cfg.risk_amount, ts,
                        self._session_exit_ts(ts), mode=cfg.mode)
-        meta = {"signal_id": p.signal_id, "planned_entry": p.plan.entry, "rr_planned": p.plan.rr}
+        meta = {"signal_id": p.signal_id, "planned_entry": p.plan.entry, "rr_planned": p.plan.rr,
+                "ticket": self.deriv_ticket(st.symbol, pos.direction, fill, pos.stop, pos.target)}
         if cfg.mode == "demo":
             try:
                 order = await self._demo_order(st.symbol, pos)
@@ -365,12 +371,9 @@ class LiveEngine:
                                         "direction": pos.direction, "entry": pos.entry, "stop": pos.stop,
                                         "target": pos.target, "contract_id": pos.contract_id},
                        message=f"{cfg.mode.upper()} {pos.direction} {st.symbol} @ {pos.entry}")
-        try:
-            from app.services import notify
-            await asyncio.to_thread(notify.notify_trade_opened, st.symbol, "CALL" if pos.direction == "long" else "PUT",
-                                    float(meta.get("stake") or cfg.risk_amount), float(pos.entry), cfg.mode)
-        except Exception:
-            pass
+        from app.services import notify
+        self._notify(notify.notify_trade_opened, st.symbol, "CALL" if pos.direction == "long" else "PUT",
+                     float(meta.get("stake") or cfg.risk_amount), float(pos.entry), cfg.mode, meta["ticket"])
 
     async def _close_paper(self, st: SymbolState, exit_px: float, reason: str) -> None:
         pos = st.position
@@ -405,9 +408,37 @@ class LiveEngine:
         usable = [m for m in accepted if frac < 0.8 / m]  # our stop must sit inside Deriv's stop-out
         if not usable:
             raise ValueError("Stop is too wide for any accepted multiplier.")
-        m = max(usable)
+        # Largest multiplier whose 1R stake still meets Deriv's minimum; otherwise the minimum stake on the
+        # smallest multiplier (then a full stop costs more than 1R: deriv_ticket reports it as effective_risk).
+        fits = [m for m in usable if self.cfg.risk_amount / (m * frac) >= MIN_STAKE]
+        m = max(fits) if fits else min(usable)
         stake = max(MIN_STAKE, math.ceil(self.cfg.risk_amount / (m * frac) * 100) / 100)
         return m, stake
+
+    def deriv_ticket(self, symbol: str, direction: str, entry: float, stop: float, target: float) -> dict:
+        """What to type into Deriv Trader (Multipliers) to place this plan by hand."""
+        rr = abs(target - entry) / abs(entry - stop)
+        risk_amount = self.cfg.risk_amount
+        ticket = {"contract": "Multipliers", "direction": "Up" if direction == "long" else "Down",
+                  "stop_loss": round(risk_amount, 2), "take_profit": round(risk_amount * rr, 2),
+                  "entry": entry, "stop": stop, "target": target, "rr": round(rr, 2), "currency": self.cfg.currency}
+        try:
+            m, stake = self._choose_multiplier(symbol, entry, stop)
+        except ValueError as exc:
+            return ticket | {"note": str(exc)}
+        effective = stake * m * abs(entry - stop) / entry  # money lost if price reaches the chart stop
+        ticket.update(multiplier=m, stake=stake, effective_risk=round(effective, 2))
+        if effective > risk_amount * 1.05:
+            ticket["note"] = (f"Deriv's ${MIN_STAKE:.0f} minimum stake makes the chart stop cost "
+                              f"{effective:.2f} {self.cfg.currency}; the Stop loss amount above closes it earlier.")
+        return ticket
+
+    def _notify(self, fn, *args) -> None:
+        """Fire-and-forget Discord/Telegram alert (never blocks the tick loop)."""
+        try:
+            asyncio.get_running_loop().run_in_executor(None, fn, *args)
+        except RuntimeError:  # no event loop (tests, scripts)
+            pass
 
     async def _demo_order(self, symbol: str, pos: Position) -> dict:
         if self.broker is None or not self.broker.connected:

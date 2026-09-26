@@ -51,7 +51,34 @@ def send_telegram(message: str) -> bool:
         return False
 
 
-def notify_trade_opened(symbol: str, direction: str, stake: float, price: float, regime: str):
+def ticket_lines(ticket: dict | None) -> str:
+    """Deriv Trader fields for placing a plan by hand."""
+    if not ticket:
+        return ""
+    cur = ticket.get("currency", "USD")
+    lines = [f"Deriv: {ticket['contract']} {ticket['direction']}"]
+    if ticket.get("multiplier"):
+        lines.append(f"Stake {ticket['stake']:.2f} {cur} · x{ticket['multiplier']}")
+    lines.append(f"Take profit {ticket['take_profit']:.2f} {cur} · Stop loss {ticket['stop_loss']:.2f} {cur}")
+    lines.append(f"Chart: entry {ticket['entry']:.5f} · stop {ticket['stop']:.5f} · target {ticket['target']:.5f} "
+                 f"({ticket['rr']:.1f}R)")
+    if ticket.get("note"):
+        lines.append(f"Note: {ticket['note']}")
+    return "\n".join(lines)
+
+
+def notify_setup(symbol: str, ticket: dict, expires_at: int):
+    """A setup passed every rule and is waiting for price to reach its entry."""
+    until = datetime.fromtimestamp(expires_at, timezone.utc).strftime('%H:%M UTC')
+    arrow = "🟢" if ticket.get("direction") == "Up" else "🔴"
+    msg = (f"{arrow} <b>Setup armed: {symbol}</b>\nWait for price to reach {ticket['entry']:.5f} (until {until}).\n"
+           f"{ticket_lines(ticket)}\nNot reached by then: skip it.")
+    send_discord(msg.replace("<b>", "**").replace("</b>", "**"))
+    send_telegram(msg)
+
+
+def notify_trade_opened(symbol: str, direction: str, stake: float, price: float, regime: str,
+                        ticket: dict | None = None):
     """Broadcast a trade-open event to all configured channels."""
     emoji = "🟢" if direction == "CALL" else "🔴"
     msg = (
@@ -74,8 +101,11 @@ def notify_trade_opened(symbol: str, direction: str, stake: float, price: float,
         ],
         "timestamp": _utcnow().isoformat(),
     }
+    if ticket:
+        discord_embed["description"] = "Entry reached: place it now.\n" + ticket_lines(ticket)
     send_discord(msg, discord_embed)
-    send_telegram(f"<b>{emoji} Trade Opened</b>\n{symbol} {direction} | ${stake:.2f} @ {price:.5f}")
+    send_telegram(f"<b>{emoji} Trade Opened</b>\n{symbol} {direction} @ {price:.5f}\n"
+                  + (f"Entry reached: place it now.\n{ticket_lines(ticket)}" if ticket else f"Stake ${stake:.2f}"))
 
 
 def notify_trade_closed(symbol: str, direction: str, profit: float, reason: str):

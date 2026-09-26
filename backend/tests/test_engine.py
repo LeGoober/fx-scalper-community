@@ -149,3 +149,34 @@ def test_metrics_overview_shape(client):
     data = client.get("/api/metrics/overview").json()
     for key in ("performance", "execution", "strategy", "data", "risk", "engine"):
         assert key in data
+
+
+def test_deriv_ticket_for_manual_orders(monkeypatch):
+    """Paper signals carry what to type into Deriv Trader: stake, multiplier, TP/SL amounts."""
+    from app.services import notify
+    eng = _engine()
+    eng.cfg.risk_amount = 1.0
+    monkeypatch.setattr(E.profile, "get", lambda symbol=None: {"multipliers": [50, 100, 150, 250, 500]})
+    t = eng.deriv_ticket("frxEURUSD", "long", entry=1.1000, stop=1.0980, target=1.1050)
+    assert t["direction"] == "Up" and t["stop_loss"] == 1.0 and t["take_profit"] == 2.5
+    assert t["multiplier"] == 250 and t["stake"] >= 1.0   # 500 would stop out before the chart stop
+    assert t["effective_risk"] == pytest.approx(1.0, abs=0.05) and "note" not in t
+    # 1R too small for Deriv's $1 minimum stake: smallest multiplier, and the overshoot is spelled out
+    eng.cfg.risk_amount = 0.02
+    monkeypatch.setattr(E.profile, "get", lambda symbol=None: {"multipliers": [5, 10, 20]})
+    small = eng.deriv_ticket("frxEURUSD", "short", entry=1.1000, stop=1.1100, target=1.0800)
+    assert small["direction"] == "Down" and small["stake"] == 1.0 and small["multiplier"] == 5
+    assert small["effective_risk"] > 0.02 and "minimum stake" in small["note"]
+    eng.cfg.risk_amount = 1.0
+    text = notify.ticket_lines(t)
+    assert "Stake" in text and "Take profit 2.50 USD" in text and "Stop loss 1.00 USD" in text
+
+
+def test_accepted_signal_stores_ticket():
+    eng = _engine()
+    st = eng.states["frxEURUSD"]
+    bars = F.Bars([1_790_000_000 + i * 300 for i in range(5)], [1.1] * 5, [1.101] * 5, [1.099] * 5, [1.1] * 5, 300)
+    eng._record_signal(st, _passing_eval(), bars)
+    with db.connect() as conn:
+        decision = db.loads(db.row(conn, "SELECT decision_json FROM signals")["decision_json"], {})
+    assert decision["ticket"]["take_profit"] == 5.0 and decision["ticket"]["direction"] == "Up"

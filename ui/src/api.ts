@@ -274,13 +274,18 @@ export interface ContractProfile { symbol: string; calibrated_at: ISO; categorie
   multipliers_advertised?: number[]; multipliers?: number[]; quoted_multiplier?: number; commission_rate?: number;
   cost_price?: number; spot?: number; rise_fall?: { minutes: number; payout_r: number; breakeven_win_rate: number }
   | { error: string }; executable?: { multiplier: boolean; rise_fall: boolean }; error?: string }
+// What to type into Deriv Trader to place a paper signal by hand (Multipliers).
+export interface DerivTicket { contract: string; direction: "Up" | "Down"; stake?: number; multiplier?: number;
+  take_profit: number; stop_loss: number; entry: number; stop: number; target: number; rr: number; currency: string;
+  effective_risk?: number; note?: string }
 export interface Signal { id: string; created_at: ISO; symbol: string; direction: Direction; strategy_id: string;
   strategy_version: number; source: string; status: "accepted" | "rejected";
   decision: { passed: boolean; flags: string[]; plan: { direction: Direction; entry: number; stop: number;
     target: number; risk: number; rr: number; target_name: string } | null;
     nodes: { id: string; kind: string; passed: boolean; value: unknown; detail: string; source: string }[];
     setup: { sweep: string; armed_at: Epoch; killzone: string | null };
-    confidence?: ConfidenceReport | null; risk_amount?: number; expires_at?: Epoch } }
+    confidence?: ConfidenceReport | null; risk_amount?: number; expires_at?: Epoch;
+    ticket?: DerivTicket } }
 // One confidence JSON per setup (evaluation="ensemble"): k question schemas × judges (Jev, Laya).
 export interface ConfidenceReport { kind: "fxs.confidence/v1"; created_at: ISO; symbol: string;
   strategy: { id: string; version: number }; armed_at: Epoch; direction: Direction;
