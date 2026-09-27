@@ -29,9 +29,9 @@ SPECS: dict[str, SecretSpec] = {
     s.name: s
     for s in [
         SecretSpec("deriv_token", "COMMUNITY_DERIV_TOKEN", "Deriv API token", "deriv",
-                   help="Create at app.deriv.com → API token with Read + Trade scopes only."),
+                   help="Personal access token from developers.deriv.com, Trade scope only (never Payments)."),
         SecretSpec("deriv_app_id", "COMMUNITY_DERIV_APP_ID", "Deriv app ID", "deriv", secret=False,
-                   help="Numeric app id; 1089 is Deriv's public test id."),
+                   help="From your app at developers.deriv.com. 1089 (the default) only works for public prices."),
         SecretSpec("typesafe_api_key", "TYPESAFE_API_KEY", "TypeSafe (Jev) API key", "jev",
                    help="From console.typesafe.ai."),
         SecretSpec("tradingview_webhook_secret", "COMMUNITY_TV_WEBHOOK_SECRET", "TradingView webhook secret",
