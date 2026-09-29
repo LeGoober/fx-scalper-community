@@ -203,6 +203,10 @@ def calendar(days_back: int = 1, days_ahead: int = 7, provider: str | None = Non
             fallback_reason = f"{chosen} unavailable ({str(exc).strip().splitlines()[-1][:160]}); used forexfactory"
             chosen, fetched = "forexfactory", _forexfactory()
     _store_events(fetched)
+    from app.services.data import observations
+    for e in fetched:  # every version of every event, stamped with when we first had it
+        observations.record(f"calendar:{e['source']}", "calendar", e, key=f"{e['ts']}|{e['currency']}|{e['title']}",
+                            currencies=[e["currency"]], title=e["title"])
     lo = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
     hi = int((datetime.now(timezone.utc) + timedelta(days=days_ahead)).timestamp())
     return {"provider": chosen, "fallback_reason": fallback_reason, "fetched": len(fetched),
@@ -221,18 +225,107 @@ def events_between(start_ts: int, end_ts: int, min_importance: int = 3,
 
 
 # --------------------------------------------------------------------- news
-def news(query: str = "forex", limit: int = 20, provider: str | None = None) -> dict:
-    obb = _load_obb()
-    if provider is None:
-        provider = "fmp" if os.getenv("FMP_API_KEY") else "tiingo" if os.getenv("TIINGO_TOKEN") else "yfinance"
+RSS_FEEDS = ("https://www.investing.com/rss/news_1.rss",   # forex news
+             "https://www.fxstreet.com/rss/news")
+
+
+def _rss_items(limit: int) -> list[dict]:
+    """Free forex headlines from public RSS feeds (headline, link, time only)."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    feeds = [u for u in os.getenv("COMMUNITY_NEWS_RSS", "").split(",") if u.strip()] or list(RSS_FEEDS)
+    items: list[dict] = []
+    for url in feeds:
+        try:
+            r = httpx.get(url.strip(), timeout=15, follow_redirects=True,
+                          headers={"User-Agent": "fx-scalper-community/1.0"})
+            r.raise_for_status()
+            root = ET.fromstring(r.content)
+        except (httpx.HTTPError, ET.ParseError):
+            continue
+        for it in root.iter("item"):
+            title = (it.findtext("title") or "").strip()
+            if not title:
+                continue
+            try:
+                when = parsedate_to_datetime(it.findtext("pubDate") or "").astimezone(timezone.utc).isoformat()
+            except (TypeError, ValueError):
+                when = ""
+            items.append({"date": when, "title": title, "url": (it.findtext("link") or "").strip(),
+                          "source": httpx.URL(url.strip()).host})
+    items.sort(key=lambda i: i["date"], reverse=True)
+    if not items:
+        raise RuntimeError("no RSS feed answered")
+    return items[:limit]
+
+
+def _news_frame(obb: Any, provider: str, query: str, limit: int) -> Any:
     if provider == "yfinance":
         # Free: company/ticker news. FX pairs map to Yahoo tickers like EURUSD=X.
         ticker = query if "=" in query or query.isupper() else "EURUSD=X"
-        frame = obb.news.company(ticker, provider="yfinance", limit=limit).to_dataframe()
-    else:
-        frame = obb.news.world(provider=provider, limit=limit).to_dataframe()
-    items = []
-    for idx, row in frame.reset_index().iterrows():
+        return obb.news.company(ticker, provider="yfinance", limit=limit).to_dataframe()
+    return obb.news.world(provider=provider, limit=limit).to_dataframe()
+
+
+def news(query: str = "forex", limit: int = 20, provider: str | None = None) -> dict:
+    """Headlines. With no provider given, tries keyed providers first and falls back to free yfinance
+    (the FMP free tier answers 402 for news); an explicitly requested provider re-raises instead."""
+    order = [provider] if provider else [p for p, key in (("fmp", "FMP_API_KEY"), ("tiingo", "TIINGO_TOKEN"))
+                                         if os.getenv(key)] + ["rss", "yfinance"]
+    frame, rss, fallback_reason = None, None, None
+    for candidate in order:
+        try:
+            if candidate == "rss":
+                rss, provider = _rss_items(limit), candidate
+            else:
+                frame, provider = _news_frame(_load_obb(), candidate, query, limit), candidate
+            break
+        except Exception as exc:
+            if len(order) == 1:
+                raise
+            fallback_reason = f"{candidate} unavailable ({str(exc).strip().splitlines()[-1][:120]})"
+    if frame is None and rss is None:
+        raise RuntimeError(f"No news provider worked: {fallback_reason}")
+    items = list(rss or [])
+    for idx, row in (frame.reset_index().iterrows() if frame is not None else []):
         items.append({"date": str(row.get("date") or idx), "title": row.get("title"), "url": row.get("url"),
                       "source": row.get("source") or provider})
-    return {"provider": provider, "items": items[:limit]}
+    from app.services.data import observations
+    new = 0
+    for item in items[:limit]:
+        published = _epoch_or_none(item["date"])
+        new += observations.record(f"news:{provider}", "news", item, published_at=published,
+                                   key=item.get("url") or item.get("title"), title=item.get("title"),
+                                   currencies=_currencies_in(item.get("title") or "")) is not None
+    return {"provider": provider, "items": items[:limit], "new": new, "fallback_reason": fallback_reason}
+
+
+FX_CODES = ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY", "XAU")
+# Longest phrases first, so "australian dollar" is AUD and only a bare "dollar" means USD.
+CURRENCY_PHRASES = (("australian dollar", "AUD"), ("new zealand dollar", "NZD"), ("canadian dollar", "CAD"),
+                    ("swiss franc", "CHF"), ("us dollar", "USD"), ("u.s. dollar", "USD"), ("aussie", "AUD"),
+                    ("kiwi", "NZD"), ("loonie", "CAD"), ("franc", "CHF"), ("dollar", "USD"), ("greenback", "USD"),
+                    ("fed", "USD"), ("fomc", "USD"), ("euro", "EUR"), ("ecb", "EUR"), ("sterling", "GBP"),
+                    ("pound", "GBP"), ("boe", "GBP"), ("yen", "JPY"), ("boj", "JPY"), ("rba", "AUD"),
+                    ("rbnz", "NZD"), ("boc", "CAD"), ("snb", "CHF"), ("yuan", "CNY"), ("pboc", "CNY"),
+                    ("gold", "XAU"))
+
+
+def _currencies_in(text: str) -> list[str]:
+    """Rough tag of which currencies a headline is about, for filtering (never for decisions)."""
+    import re
+    tags = {c for c in FX_CODES if re.search(rf"\b{c}\b|\b{c}(?=[A-Z]{{3}}\b)|(?<=\b[A-Z]{{3}}){c}\b", text.upper())}
+    lower = f" {re.sub(r'[^a-z. ]', ' ', text.lower())} "
+    for phrase, code in CURRENCY_PHRASES:
+        if f" {phrase} " in lower:
+            tags.add(code)
+            lower = lower.replace(f" {phrase} ", " ")  # consumed: 'australian dollar' must not also match 'dollar'
+    return sorted(tags)
+
+
+def _epoch_or_none(value: str) -> int | None:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int((dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp())

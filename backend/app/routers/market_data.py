@@ -92,6 +92,19 @@ async def candles(symbol: str, granularity: int = 60, start: int | None = None, 
     return {"symbol": symbol, "granularity": resample or granularity, "candles": rows[-limit:]}
 
 
+# ------------------------------------------------------------ observations
+@router.get("/observations", summary="Point-in-time observations (calendar, news, TradingView alerts)")
+def list_observations(kind: str | None = None, limit: int = 100) -> dict:
+    from app.services.data import observations
+    return {"observations": observations.recent(kind, min(max(limit, 1), 500)), "counts": observations.counts()}
+
+
+@router.get("/scheduler", summary="Background data jobs: last run, errors, results")
+def scheduler_status() -> dict:
+    from app import scheduler
+    return {"jobs": scheduler.status()}
+
+
 # ------------------------------------------------------------------ OpenBB
 @router.get("/openbb/status", summary="Is the OpenBB data layer installed and which providers are keyed")
 async def openbb_status() -> dict:

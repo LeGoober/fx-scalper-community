@@ -36,3 +36,4 @@ def client():
 
 os.environ.setdefault("COMMUNITY_HOST", "127.0.0.1")
 os.environ["COMMUNITY_NO_OPENBB_WARM"] = "1"
+os.environ["COMMUNITY_NO_SCHEDULER"] = "1"

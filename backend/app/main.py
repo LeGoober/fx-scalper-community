@@ -34,7 +34,10 @@ async def lifespan(_: FastAPI):
     from app.services import execution
     if instance_lock.owned():
         execution.SERVICE.ensure_polling()  # reconcile anything left at the broker by an earlier run
+    from app import scheduler
+    scheduler.start()
     yield
+    await scheduler.stop()
     try:
         from app.services import engine
         await engine.stop(reason="shutdown")

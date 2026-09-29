@@ -133,6 +133,17 @@ MIGRATIONS: list[str] = [
     ALTER TABLE trades ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE trades ADD COLUMN size REAL
     """,
+    # 5 — point-in-time observations (calendar, news, TradingView alerts): what we knew, and when
+    """
+    CREATE TABLE observations (
+        id TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL, obs_key TEXT, symbol TEXT,
+        currencies TEXT, title TEXT, published_at INTEGER, ingested_at INTEGER NOT NULL,
+        content_hash TEXT NOT NULL, revision_of TEXT, payload_json TEXT,
+        UNIQUE (source, content_hash)
+    );
+    CREATE INDEX idx_obs_kind_ingested ON observations(kind, ingested_at);
+    CREATE INDEX idx_obs_key ON observations(source, obs_key)
+    """,
 ]
 
 
