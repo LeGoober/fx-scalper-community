@@ -104,6 +104,35 @@ MIGRATIONS: list[str] = [
     ALTER TABLE econ_events ADD COLUMN first_seen_at INTEGER;
     CREATE INDEX idx_trades_status ON trades(status, mode)
     """,
+    # 4 — decision ledger: proposal → decision → order intent → trade, for every automated order
+    """
+    CREATE TABLE proposals (
+        id TEXT PRIMARY KEY, created_at TEXT NOT NULL, source TEXT NOT NULL, strategy_id TEXT,
+        strategy_version INTEGER, symbol TEXT NOT NULL, direction TEXT NOT NULL, entry REAL,
+        stop REAL NOT NULL, target REAL, entry_type TEXT NOT NULL, expires_at INTEGER,
+        setup_key TEXT NOT NULL, signal_id TEXT, evidence_json TEXT,
+        UNIQUE (source, symbol, setup_key)
+    );
+    CREATE TABLE decisions (
+        id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, decided_at TEXT NOT NULL,
+        broker TEXT, account_kind TEXT, auto INTEGER NOT NULL DEFAULT 1, verdict TEXT NOT NULL,
+        reasons_json TEXT, autonomy_json TEXT, sizing_json TEXT, trade_id TEXT
+    );
+    CREATE TABLE order_intents (
+        client_order_id TEXT PRIMARY KEY, decision_id TEXT, trade_id TEXT, broker TEXT NOT NULL,
+        account_kind TEXT, symbol TEXT NOT NULL, broker_symbol TEXT, side TEXT NOT NULL,
+        size REAL NOT NULL, order_type TEXT NOT NULL, level REAL, stop_level REAL, tp_level REAL,
+        state TEXT NOT NULL, deal_id TEXT, deal_reference TEXT, reason TEXT, request_json TEXT,
+        response_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_intents_state ON order_intents(state);
+    CREATE INDEX idx_decisions_time ON decisions(decided_at);
+    ALTER TABLE trades ADD COLUMN broker TEXT;
+    ALTER TABLE trades ADD COLUMN deal_id TEXT;
+    ALTER TABLE trades ADD COLUMN decision_id TEXT;
+    ALTER TABLE trades ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE trades ADD COLUMN size REAL
+    """,
 ]
 
 

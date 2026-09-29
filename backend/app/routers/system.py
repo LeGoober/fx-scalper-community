@@ -70,7 +70,17 @@ async def _test_openbb() -> dict:
     return await asyncio.to_thread(openbb_feed.self_test)
 
 
+async def _test_capital() -> dict:
+    from app.services.brokers.capital import CapitalBroker
+    broker = CapitalBroker("demo")
+    try:
+        return {"ok": True, "detail": await broker.connect()}
+    finally:
+        await broker.close()
+
+
 TESTS = {"deriv_token": _test_deriv, "deriv_app_id": _test_deriv, "typesafe_api_key": _test_jev,
+         "capital_api_key": _test_capital, "capital_identifier": _test_capital, "capital_api_password": _test_capital,
          "fmp_api_key": _test_openbb, "fred_api_key": _test_openbb, "tiingo_token": _test_openbb}
 
 

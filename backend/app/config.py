@@ -106,3 +106,26 @@ def jev_model() -> str:
 # TradingView -----------------------------------------------------------------
 def tradingview_webhook_secret() -> str:
     return env("COMMUNITY_TV_WEBHOOK_SECRET")
+
+
+# Capital.com (execution venue that TradingView can display) ---------------------------------
+CAPITAL_DEMO_URL = "https://demo-api-capital.backend-capital.com"
+CAPITAL_LIVE_URL = "https://api-capital.backend-capital.com"
+
+
+def capital_url(kind: str) -> str:
+    """Demo unless asked for 'real'. The broker adapter itself enforces the real-money lock."""
+    return env("COMMUNITY_CAPITAL_LIVE_URL", CAPITAL_LIVE_URL) if kind == "real" else \
+        env("COMMUNITY_CAPITAL_DEMO_URL", CAPITAL_DEMO_URL)
+
+
+def capital_api_key() -> str:
+    return env("COMMUNITY_CAPITAL_API_KEY")
+
+
+def capital_identifier() -> str:
+    return env("COMMUNITY_CAPITAL_IDENTIFIER")
+
+
+def capital_api_password() -> str:
+    return env("COMMUNITY_CAPITAL_API_PASSWORD")

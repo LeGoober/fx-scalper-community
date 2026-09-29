@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("fxs")
 
 UI_DIST = config.PROJECT_DIR / "ui" / "dist"
-OPTIONAL_ROUTERS = ("transcripts", "strategy", "backtests", "trading", "metrics", "webhooks")
+OPTIONAL_ROUTERS = ("transcripts", "strategy", "backtests", "trading", "metrics", "webhooks", "desk")
 
 
 @asynccontextmanager
@@ -31,6 +31,9 @@ async def lifespan(_: FastAPI):
         from app.services.data import openbb_feed
         openbb_feed.warm()
     log.info("API on http://%s:%s  (docs at /docs)", config.host(), config.port())
+    from app.services import execution
+    if instance_lock.owned():
+        execution.SERVICE.ensure_polling()  # reconcile anything left at the broker by an earlier run
     yield
     try:
         from app.services import engine
@@ -38,6 +41,7 @@ async def lifespan(_: FastAPI):
     except ImportError:
         pass
     finally:
+        await execution.SERVICE.close()
         instance_lock.release()
 
 

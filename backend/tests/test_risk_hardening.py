@@ -102,11 +102,11 @@ def test_restart_settles_contracts_that_closed_while_offline_and_abandons_paper(
     eng.broker = Broker()
     eng.states = {"frxEURUSD": E.SymbolState("frxEURUSD")}
     summary = asyncio.run(eng._reconcile_open_trades())
-    assert summary == {"abandoned_paper": 1, "settled": 1, "resumed": 0, "unknown": 1}
+    assert summary == {"abandoned_paper": 1, "settled": 1, "resumed": 0, "orphaned": 1}
     with db.connect() as conn:
         rows = {r["id"]: r for r in db.rows(conn, "SELECT id, status, pnl, r_multiple FROM trades")}
     assert rows["t-demo"]["status"] == "closed" and rows["t-demo"]["pnl"] == -2.0 and rows["t-demo"]["r_multiple"] == -1
-    assert rows["t-paper"]["status"] == "abandoned" and rows["t-nocontract"]["status"] == "unknown"
+    assert rows["t-paper"]["status"] == "abandoned" and rows["t-nocontract"]["status"] == "orphaned"
     assert risk.today_stats()["open"] == 0   # nothing stale left blocking max_concurrent
 
 

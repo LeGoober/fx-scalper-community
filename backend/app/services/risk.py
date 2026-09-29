@@ -27,7 +27,12 @@ DEFAULTS = {
     "max_daily_loss": 20.0,      # realised loss today before new orders stop
     "max_concurrent": 3,         # open engine/live trades
     "max_orders_per_day": 30,
+    "max_notional": 20000.0,     # position value per order (CFDs), account currency
+    "max_basis_r": 0.25,         # max venue price gap (Capital.com vs the signal feed) as a fraction of 1R
 }
+AUTONOMY_KEY = "autonomy"
+MASTER_STATES = ("off", "pause", "on")
+ACTIVE_STATUSES = ("submitting", "working", "open", "unknown")  # trades that can still lose money
 
 _state_lock = threading.Lock()
 _real_armed = False  # deliberately per-process: arming real money must be repeated after every restart
@@ -43,8 +48,10 @@ class OrderIntent:
     symbol: str
     stake: float
     contract_type: str
-    is_virtual: bool | None  # from DerivClient.is_virtual after connect
+    is_virtual: bool | None  # True only when the broker verified a demo account (fail-closed)
     risk_amount: float | None = None  # loss at the stop; None for fixed-stake options (risk = stake)
+    auto: bool = False       # placed by the system on its own (needs the master switch ON)
+    notional: float | None = None
 
 
 def limits() -> dict:
@@ -75,6 +82,25 @@ def set_kill_switch(active: bool) -> None:
         db.kv_set(KILL_KEY, {"active": bool(active), "at": db.utc_now()})
     events.publish("risk.kill_switch", {"active": bool(active)}, level="warning" if active else "info",
                    message="Kill switch ENGAGED" if active else "Kill switch released")
+
+
+def autonomy() -> dict:
+    """The master switch: off (no automatic orders; ON→OFF flattens), pause (no new orders, keep what
+    is open), on (the system trades by itself inside every limit). Stored, so it survives restarts."""
+    state = db.kv_get(AUTONOMY_KEY) or {}
+    return {"master": state.get("master", "off"), "updated_at": state.get("updated_at")}
+
+
+def set_autonomy(master: str) -> dict:
+    if master not in MASTER_STATES:
+        raise ValueError(f"master must be one of {MASTER_STATES}")
+    if master == "on" and kill_switch_active():
+        raise RiskBlocked("Release the kill switch before turning the master switch on.")
+    with _state_lock:
+        db.kv_set(AUTONOMY_KEY, {"master": master, "updated_at": db.utc_now()})
+    events.publish("autonomy.changed", {"master": master}, level="warning" if master == "on" else "info",
+                   message=f"Master switch {master.upper()}")
+    return autonomy()
 
 
 def real_trading_status() -> dict:
@@ -119,7 +145,7 @@ def today_stats() -> dict:
         recent = db.rows(conn, "SELECT pnl, opened_at FROM trades WHERE mode IN ('demo', 'real') AND opened_at >= ?",
                          (since.isoformat(timespec="seconds").replace("+00:00", "Z"),))
         open_rows = db.rows(conn, "SELECT stake, risk_amount FROM trades WHERE mode IN ('demo', 'real') "
-                                  "AND status = 'open'")
+                                  f"AND status IN ({','.join('?' * len(ACTIVE_STATUSES))})", ACTIVE_STATUSES)
     todays = [r for r in recent if trading_day(_epoch(r["opened_at"])) == day]
     loss = sum(-r["pnl"] for r in todays if r["pnl"] is not None and r["pnl"] < 0)
     pnl = sum(r["pnl"] for r in todays if r["pnl"] is not None)
@@ -158,6 +184,8 @@ def check_order(intent: OrderIntent) -> None:
 
     if kill_switch_active():
         block("Kill switch is engaged.")
+    if intent.auto and autonomy()["master"] != "on":
+        block(f"Master switch is {autonomy()['master'].upper()}: no automatic orders.")
     if intent.is_virtual is not True:
         status = real_trading_status()
         if intent.is_virtual is None:
@@ -165,6 +193,8 @@ def check_order(intent: OrderIntent) -> None:
         if not status["effective"]:
             block("Account is REAL and real trading is not enabled+armed. Demo-only lock is active.")
     lim = limits()
+    if intent.notional is not None and intent.notional > lim["max_notional"]:
+        block(f"Position value {intent.notional:.0f} exceeds max_notional {lim['max_notional']:.0f}.")
     if intent.stake <= 0 or intent.stake > lim["max_stake"]:
         block(f"Stake {intent.stake} exceeds max_stake {lim['max_stake']}.")
     at_risk = intent.risk_amount if intent.risk_amount is not None else intent.stake

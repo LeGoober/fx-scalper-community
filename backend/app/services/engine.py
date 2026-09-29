@@ -46,6 +46,9 @@ class EngineConfig(BaseModel):
     evaluation: Literal["code", "jev", "laya", "ensemble"] = "code"
     risk_amount: float = Field(1.0, gt=0, description="Account currency lost at the planned stop (1R)")
     currency: str = "USD"
+    broker: Literal["deriv", "capital"] = Field(
+        "deriv", description="Where demo/real orders go. 'capital' = Capital.com (shows in TradingView), placed "
+                             "through the decision pipeline and gated by the master switch")
 
 
 @dataclass
@@ -121,33 +124,10 @@ class LiveEngine:
             raise RuntimeError(f"evaluation='{cfg.evaluation}' has no judge available "
                                "(Jev needs TYPESAFE_API_KEY; Laya needs `pip install laya`).")
         if cfg.mode in {"demo", "real"}:
-            want_virtual = cfg.mode == "demo"
-            if not want_virtual:
-                if not risk.real_trading_status()["effective"]:
-                    raise risk.RiskBlocked("Real mode needs COMMUNITY_ALLOW_REAL_TRADING=true in .env (edited by hand) "
-                                           "and real trading armed in Settings → Risk (typed confirmation).")
-                if cfg.risk_amount > risk.limits()["max_risk_per_trade"]:
-                    raise risk.RiskBlocked(f"Risk per trade {cfg.risk_amount} is above max_risk_per_trade "
-                                           f"{risk.limits()['max_risk_per_trade']} (Settings → Risk).")
-            from app import instance_lock
-            if not instance_lock.owned():
-                raise RuntimeError("Another backend process holds the trading lock; refusing to place orders "
-                                   "from two processes (duplicate orders). Stop the other one first.")
-            self.broker = DerivClient(account_mode=cfg.mode)
-            if not self.broker.token:
-                raise RuntimeError(f"{cfg.mode.capitalize()} mode needs a Deriv API token (Settings → API keys).")
-            info = await self.broker.connect()
-            if self.broker.is_virtual is not want_virtual:
-                await self.broker.close()
-                self.broker = None
-                raise risk.RiskBlocked(f"Refusing to start: account {info.get('loginid')} is not verified as "
-                                       f"{cfg.mode}.")
-            if info.get("currency"):
-                self.cfg = cfg = cfg.model_copy(update={"currency": info["currency"]})
-            for sym in cfg.symbols:
-                prof = profile.get(sym)
-                if not prof:
-                    await profile.calibrate([sym], self.schema.execution.contract.rise_fall_minutes)
+            self._gate_orders(cfg)
+            currency = await (self._connect_capital(cfg) if cfg.broker == "capital" else self._connect_deriv(cfg))
+            if currency:
+                self.cfg = cfg = cfg.model_copy(update={"currency": currency})
         self.states = {s: SymbolState(s) for s in cfg.symbols}
         reconciled = await self._reconcile_open_trades()
         self.feed = DerivClient(token="")
@@ -158,15 +138,51 @@ class LiveEngine:
                        message=f"Engine started ({cfg.mode}, {cfg.evaluation})")
         return self.status()
 
+    @staticmethod
+    def _gate_orders(cfg: EngineConfig) -> None:
+        """Refuse to start an engine that places orders unless every precondition holds."""
+        if cfg.mode == "real":
+            if not risk.real_trading_status()["effective"]:
+                raise risk.RiskBlocked("Real mode needs COMMUNITY_ALLOW_REAL_TRADING=true in .env (edited by hand) "
+                                       "and real trading armed in Settings → Risk (typed confirmation).")
+            if cfg.risk_amount > risk.limits()["max_risk_per_trade"]:
+                raise risk.RiskBlocked(f"Risk per trade {cfg.risk_amount} is above max_risk_per_trade "
+                                       f"{risk.limits()['max_risk_per_trade']} (Settings → Risk).")
+        from app import instance_lock
+        if not instance_lock.owned():
+            raise RuntimeError("Another backend process holds the trading lock; refusing to place orders "
+                               "from two processes (duplicate orders). Stop the other one first.")
+
+    async def _connect_capital(self, cfg: EngineConfig) -> str | None:
+        from app.services import execution
+        venue = await execution.SERVICE.broker("capital", cfg.mode)  # verifies the account kind, fail-closed
+        return venue.info().get("currency")
+
+    async def _connect_deriv(self, cfg: EngineConfig) -> str | None:
+        self.broker = DerivClient(account_mode=cfg.mode)
+        if not self.broker.token:
+            raise RuntimeError(f"{cfg.mode.capitalize()} mode needs a Deriv API token (Settings → API keys).")
+        info = await self.broker.connect()
+        if self.broker.is_virtual is not (cfg.mode == "demo"):
+            await self.broker.close()
+            self.broker = None
+            raise risk.RiskBlocked(f"Refusing to start: account {info.get('loginid')} is not verified as {cfg.mode}.")
+        for sym in cfg.symbols:
+            if not profile.get(sym):
+                await profile.calibrate([sym], self.schema.execution.contract.rise_fall_minutes)
+        return info.get("currency")
+
     async def _reconcile_open_trades(self) -> dict:
         """Trades left 'open' by an earlier process: settle, resume tracking, or flag them.
 
         Without this, a restart leaves rows 'open' forever: they block max_concurrent and the
         daily-loss limit, and a contract that closed while we were down is never recorded."""
-        summary = {"abandoned_paper": 0, "settled": 0, "resumed": 0, "unknown": 0}
+        summary = {"abandoned_paper": 0, "settled": 0, "resumed": 0, "orphaned": 0}
         with db.connect() as conn:
             rows = db.rows(conn, "SELECT * FROM trades WHERE status = 'open'")
         for row in rows:
+            if row.get("broker"):
+                continue  # placed through the execution service, which reconciles it against its venue
             if row["mode"] == "paper":
                 # Paper positions live only in memory, so an earlier process's paper trade cannot be resumed.
                 self._close_row(row["id"], "abandoned", "engine_restart")
@@ -175,8 +191,9 @@ class LiveEngine:
             if row["mode"] != self.cfg.mode or self.broker is None:
                 continue  # another account kind: reconciled when the engine runs in that mode
             if not row["contract_id"]:
-                self._close_row(row["id"], "unknown", "no_contract_id")
-                summary["unknown"] += 1
+                # Deriv rows are written only after a successful buy, so no contract id means no contract.
+                self._close_row(row["id"], "orphaned", "no_contract_id")
+                summary["orphaned"] += 1
                 events.publish("trade.tracking_error", {"id": row["id"], "error": "open trade without a contract id"},
                                level="error", message=f"Trade {row['id']} has no broker contract: check Deriv")
                 continue
@@ -241,7 +258,7 @@ class LiveEngine:
             "config": self.cfg.model_dump() if self.cfg else None,
             "strategy": {"id": self.schema.id, "version": self.schema.version} if self.schema else None,
             "feed_rtt_ms": self.feed.last_rtt_ms if self.feed else None,
-            "broker": self.broker.account_info() if self.broker else None,
+            "broker": self.broker.account_info() if self.broker else self._venue_info(),
             "symbols": [{
                 "symbol": st.symbol, "bars": len(st.bars), "last_price": st.last_price, "last_tick": st.last_tick,
                 "pending": [{"id": p.id, "direction": p.plan.direction, "entry": p.plan.entry, "stop": p.plan.stop,
@@ -251,6 +268,13 @@ class LiveEngine:
                 "evaluations": st.evaluations, "signals": st.signals, "errors": st.errors,
                 "last_error": st.last_error} for st in self.states.values()],
         }
+
+    def _venue_info(self) -> dict | None:
+        if not self.cfg or self.cfg.broker != "capital":
+            return None
+        from app.services import execution
+        venue = next((b for b in execution.SERVICE.status()["brokers"] if b.get("broker") == "capital"), None)
+        return (venue or {}) | {"loginid": (venue or {}).get("account_id"), "broker": "capital"}
 
     # --------------------------------------------------------------- feed
     async def _run_symbol(self, symbol: str) -> None:
@@ -373,7 +397,34 @@ class LiveEngine:
         expires = S.entry_deadline(bars.t[-1] + self.schema.entry_granularity, ex, self.schema.entry_granularity)
         from app.services import notify
         self._notify(notify.notify_setup, st.symbol, decision["ticket"], expires)
+        if self.cfg.broker == "capital" and self.cfg.mode in {"demo", "real"}:
+            self._propose(st, ev, bars, signal_id, decision, expires, day)
+            return
         st.pending.append(Pending(f"po-{uuid.uuid4().hex[:8]}", st.symbol, signal_id, ev.plan, expires, bars.t[-1]))
+
+    def _propose(self, st: SymbolState, ev: S.Evaluation, bars: F.Bars, signal_id: str, evidence: dict,
+                 expires: int, day: str) -> None:
+        """Hand an accepted setup to the decision pipeline as a broker-side limit order (Capital.com)."""
+        from app.services import decision
+        with db.connect() as conn:
+            busy = conn.execute("SELECT COUNT(*) FROM trades WHERE broker = 'capital' AND symbol = ? AND status IN "
+                                "('submitting', 'working', 'open', 'unknown')", (st.symbol,)).fetchone()[0]
+        if busy:
+            return  # one position per symbol, as in the backtest
+        plan = ev.plan
+        p = decision.Proposal(
+            source="ict_engine", symbol=st.symbol, direction=plan.direction, stop=plan.stop, target=plan.target,
+            entry=plan.entry, entry_type="limit", expires_at=int(expires),
+            setup_key=f"{st.symbol}:{plan.direction}:{bars.t[ev.setup.mss_index]}",
+            strategy_id=self.schema.id, strategy_version=self.schema.version, signal_id=signal_id,
+            evidence={"signal": evidence, "evaluation": self.cfg.evaluation, "reference_price": st.last_price})
+        st.trades_today[day] = st.trades_today.get(day, 0) + 1
+        coro = decision.submit(p, broker="capital", account_kind=self.cfg.mode, risk_amount=self.cfg.risk_amount,
+                               auto=True, reference_price=st.last_price)
+        try:
+            asyncio.get_running_loop().create_task(coro, name=f"decide:{st.symbol}")
+        except RuntimeError:  # no loop (scripts/tests): run inline
+            asyncio.run(coro)
 
     # --------------------------------------------------------- execution
     async def _on_tick(self, st: SymbolState, price: float, ts: int) -> None:
