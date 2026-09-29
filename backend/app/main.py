@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("fxs")
 
 UI_DIST = config.PROJECT_DIR / "ui" / "dist"
-OPTIONAL_ROUTERS = ("transcripts", "strategy", "backtests", "trading", "metrics", "webhooks", "desk")
+OPTIONAL_ROUTERS = ("transcripts", "strategy", "backtests", "trading", "metrics", "webhooks", "desk", "agents")
 
 
 @asynccontextmanager

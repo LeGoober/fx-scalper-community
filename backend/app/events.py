@@ -17,7 +17,7 @@ _loop: asyncio.AbstractEventLoop | None = None
 
 # Kinds worth keeping in the `events` table (progress ticks are not).
 PERSISTED_PREFIXES = ("trade.", "signal.", "risk.", "broker.", "job.", "backtest.", "webhook.", "engine.",
-                      "proposal.", "decision.", "order.", "autonomy.")
+                      "proposal.", "decision.", "order.", "autonomy.", "agent.")
 
 
 def bind_loop(loop: asyncio.AbstractEventLoop) -> None:

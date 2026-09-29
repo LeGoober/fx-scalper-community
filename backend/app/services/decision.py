@@ -70,6 +70,14 @@ async def submit(p: Proposal, *, broker: str, account_kind: str, risk_amount: fl
     events.publish("proposal.new", {"id": p.id, "source": p.source, "symbol": p.symbol, "direction": p.direction},
                    message=f"Proposal {p.symbol} {p.direction} ({p.source})")
     verdict, reasons = policy(p, auto=auto)
+    agent_outputs: list = []
+    # Agents review every proposal that only the master switch holds back, too, so their track record
+    # (attribution) builds up before they are ever given authority.
+    if verdict == "execute" or all(r.startswith("master switch") for r in reasons):
+        from app.services.agents import runner
+        agent_verdict, agent_reasons, agent_outputs = await runner.review(asdict(p) | {"created_at": now})
+        if verdict == "execute" and agent_verdict == "skip":  # agents can only ever lower risk
+            verdict, reasons = "skip", reasons + agent_reasons
     result: dict = {"verdict": "skipped", "reasons": reasons, "trade_id": None, "sizing": None}
     decision_id = f"dec-{uuid.uuid4().hex[:10]}"
     if verdict == "execute":
@@ -86,13 +94,17 @@ async def submit(p: Proposal, *, broker: str, account_kind: str, risk_amount: fl
                      (decision_id, p.id, db.utc_now(), broker, account_kind, int(auto), result["verdict"],
                       db.dumps(result.get("reasons") or []), db.dumps(risk.autonomy()), db.dumps(result.get("sizing")),
                       result.get("trade_id")))
+    from app.services.agents import runner
+    runner.record(agent_outputs, proposal_id=p.id, decision_id=decision_id)
     level = "info" if result["verdict"] in {"executed", "skipped"} else "warning"
     events.publish("decision.made", {"id": decision_id, "proposal_id": p.id, "symbol": p.symbol,
                                      "verdict": result["verdict"], "reasons": result.get("reasons"),
                                      "trade_id": result.get("trade_id")}, level=level,
                    message=f"{p.symbol} {p.direction}: {result['verdict']}"
                    + (f" ({'; '.join(result.get('reasons') or [])})" if result.get("reasons") else ""))
-    return {"status": "decided", "decision_id": decision_id, "proposal_id": p.id} | result
+    return {"status": "decided", "decision_id": decision_id, "proposal_id": p.id,
+            "agents": [{k: o.get(k) for k in ("role", "authority", "ok", "would_veto", "error")}
+                       for o in agent_outputs]} | result
 
 
 def dossier(decision_id: str) -> dict | None:
@@ -106,6 +118,12 @@ def dossier(decision_id: str) -> dict | None:
         trade = db.row(conn, "SELECT * FROM trades WHERE id = ?", (d["trade_id"],)) if d["trade_id"] else None
         signal = db.row(conn, "SELECT id, created_at, status, decision_json FROM signals WHERE id = ?",
                         (p["signal_id"],)) if p and p["signal_id"] else None
+        agents = db.rows(conn, "SELECT a.*, c.request_json, c.response_json, c.cost, c.in_tok, c.out_tok "
+                               "FROM agent_outputs a LEFT JOIN llm_calls c ON c.id = a.llm_call_id "
+                               "WHERE a.decision_id = ? ORDER BY a.role", (decision_id,))
+    for a in agents:
+        a["output"] = db.loads(a.pop("output_json"), None)
+        a["request"], a["response"] = db.loads(a.pop("request_json"), None), db.loads(a.pop("response_json"), None)
     for row, keys in ((d, ("reasons_json", "autonomy_json", "sizing_json")), (p, ("evidence_json",))):
         for k in keys:
             if row is not None:
@@ -116,7 +134,7 @@ def dossier(decision_id: str) -> dict | None:
         trade["meta"] = db.loads(trade.pop("meta_json"), None)
     if signal:
         signal["decision"] = db.loads(signal.pop("decision_json"), None)
-    return {"decision": d, "proposal": p, "intents": intents, "trade": trade, "signal": signal}
+    return {"decision": d, "proposal": p, "intents": intents, "trade": trade, "signal": signal, "agents": agents}
 
 
 def recent(limit: int = 100) -> list[dict]:

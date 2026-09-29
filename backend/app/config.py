@@ -129,3 +129,17 @@ def capital_identifier() -> str:
 
 def capital_api_password() -> str:
     return env("COMMUNITY_CAPITAL_API_PASSWORD")
+
+
+# LLM agents (OpenAI-compatible; OpenRouter by default) ------------------------------------
+def llm_base_url() -> str:
+    return env("COMMUNITY_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+
+def llm_api_key() -> str:
+    return env("COMMUNITY_LLM_API_KEY", "", "OPENROUTER_API_KEY")
+
+
+def llm_model(role: str) -> str:
+    """Model id for one agent role: COMMUNITY_LLM_MODEL_<ROLE>, else COMMUNITY_LLM_MODEL, else unset."""
+    return env(f"COMMUNITY_LLM_MODEL_{role.upper()}", "", "COMMUNITY_LLM_MODEL")

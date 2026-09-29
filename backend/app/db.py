@@ -144,6 +144,24 @@ MIGRATIONS: list[str] = [
     CREATE INDEX idx_obs_kind_ingested ON observations(kind, ingested_at);
     CREATE INDEX idx_obs_key ON observations(source, obs_key)
     """,
+    # 6 — agents: every LLM call (what was asked, what came back, cost) and every agent verdict
+    """
+    CREATE TABLE llm_calls (
+        id TEXT PRIMARY KEY, created_at TEXT NOT NULL, role TEXT NOT NULL, model TEXT NOT NULL,
+        prompt_version TEXT, prompt_hash TEXT NOT NULL, input_hash TEXT NOT NULL, request_json TEXT,
+        response_json TEXT, parsed_json TEXT, valid INTEGER NOT NULL, error TEXT, in_tok INTEGER,
+        out_tok INTEGER, cost REAL, latency_ms REAL, cached INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_llm_cache ON llm_calls(model, prompt_hash, input_hash, valid);
+    CREATE INDEX idx_llm_day ON llm_calls(created_at);
+    CREATE TABLE agent_outputs (
+        id TEXT PRIMARY KEY, created_at TEXT NOT NULL, proposal_id TEXT NOT NULL, decision_id TEXT,
+        role TEXT NOT NULL, authority TEXT NOT NULL, ok INTEGER NOT NULL, would_veto INTEGER NOT NULL,
+        output_json TEXT, error TEXT, llm_call_id TEXT, model TEXT, latency_ms REAL
+    );
+    CREATE INDEX idx_agent_outputs_role ON agent_outputs(role, created_at);
+    CREATE INDEX idx_agent_outputs_decision ON agent_outputs(decision_id)
+    """,
 ]
 
 
