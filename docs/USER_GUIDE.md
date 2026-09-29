@@ -140,6 +140,38 @@ real Deriv costs are applied. In the report:
 Rule of thumb before real money: **at least 50 trades, positive out-of-sample expectancy, and a 95%
 range that stays above zero**, then the same behaviour on demo.
 
+## 6b. Data plane, TradingView signals and AI agents
+
+**Research page.** The calendar (every 15 min) and forex headlines (every 5 min) are stored with two
+timestamps: when the source says it happened, and when this system first had it. A decision only
+sees what had arrived by then, so a replay or backtest can't peek at later information. Headlines
+come from free RSS feeds when FMP (free tier) or yfinance can't provide them.
+
+**Your own TradingView indicators as signal sources.** Every authenticated TradingView alert is recorded.
+An alert *name* you list under **Research → TradingView signal sources** may also *propose* a trade
+(demo only) when its JSON carries `direction` and `stop` (optionally `entry` and `target`). The
+proposal then goes through the same pipeline as the engine's: master switch, risk limits, agents,
+ledger. A replayed alert id never orders twice.
+
+**Agents (Settings → Agents).** Specialised LLM agents review each proposal through OpenRouter (any
+OpenAI-compatible endpoint works). The first is **event risk**: it reads the calendar ±3 hours and
+recent headlines for the pair's currencies and rates the danger as none / elevated / extreme.
+
+| Authority | Effect |
+|---|---|
+| **off** | doesn't run |
+| **log** (start here) | reviews every proposal, even ones the master switch holds back; its answer is stored and measured, never acted on |
+| **veto** | may turn *execute* into *skip* when it rates a trade extreme; it can never create, enlarge or redirect a trade |
+
+Set it up: API keys → **Agents** (OpenRouter key; set a credit limit on the key itself too), then
+Settings → Agents: choose a model, press **Test now**, keep authority at **log**, and set a daily cap.
+Each decision's dossier shows the agent's answer and exactly what the model was sent and returned.
+
+**When to raise an agent to veto.** Attribution compares what the setups it *would* veto actually did
+against the ones it let through. Give veto authority only when its verdict says vetoes remove worse
+trades beyond chance (at least 10 on each side). LLM judgements can't be backtested honestly, because
+models have memorised history, so this forward record is the only evidence that counts.
+
 ## 7. Research tools (command line, from `fx-scalper-community/backend`)
 
 | Task | Command |
