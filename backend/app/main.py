@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app import config, db, events
+from app import config, db, events, instance_lock
 from app.routers import legacy, market_data, system
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -25,6 +25,8 @@ OPTIONAL_ROUTERS = ("transcripts", "strategy", "backtests", "trading", "metrics"
 async def lifespan(_: FastAPI):
     db.init()
     events.bind_loop(asyncio.get_running_loop())
+    if not instance_lock.acquire(config.data_dir() / "backend.lock"):
+        log.error("Another backend process is running on this data directory: order placement is disabled here.")
     if importlib.util.find_spec("openbb") is not None and not config.env_bool("COMMUNITY_NO_OPENBB_WARM"):
         from app.services.data import openbb_feed
         openbb_feed.warm()
@@ -35,6 +37,8 @@ async def lifespan(_: FastAPI):
         await engine.stop(reason="shutdown")
     except ImportError:
         pass
+    finally:
+        instance_lock.release()
 
 
 app = FastAPI(

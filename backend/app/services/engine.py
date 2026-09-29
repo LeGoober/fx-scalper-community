@@ -129,6 +129,10 @@ class LiveEngine:
                 if cfg.risk_amount > risk.limits()["max_risk_per_trade"]:
                     raise risk.RiskBlocked(f"Risk per trade {cfg.risk_amount} is above max_risk_per_trade "
                                            f"{risk.limits()['max_risk_per_trade']} (Settings → Risk).")
+            from app import instance_lock
+            if not instance_lock.owned():
+                raise RuntimeError("Another backend process holds the trading lock; refusing to place orders "
+                                   "from two processes (duplicate orders). Stop the other one first.")
             self.broker = DerivClient(account_mode=cfg.mode)
             if not self.broker.token:
                 raise RuntimeError(f"{cfg.mode.capitalize()} mode needs a Deriv API token (Settings → API keys).")
@@ -145,12 +149,68 @@ class LiveEngine:
                 if not prof:
                     await profile.calibrate([sym], self.schema.execution.contract.rise_fall_minutes)
         self.states = {s: SymbolState(s) for s in cfg.symbols}
+        reconciled = await self._reconcile_open_trades()
         self.feed = DerivClient(token="")
         await self.feed.connect(authorize=False)
         self.started_at, self.stopped_reason = db.utc_now(), None
         self.tasks = [asyncio.create_task(self._run_symbol(s), name=f"engine:{s}") for s in cfg.symbols]
-        events.publish("engine.started", self.status(), message=f"Engine started ({cfg.mode}, {cfg.evaluation})")
+        events.publish("engine.started", self.status() | {"reconciled": reconciled},
+                       message=f"Engine started ({cfg.mode}, {cfg.evaluation})")
         return self.status()
+
+    async def _reconcile_open_trades(self) -> dict:
+        """Trades left 'open' by an earlier process: settle, resume tracking, or flag them.
+
+        Without this, a restart leaves rows 'open' forever: they block max_concurrent and the
+        daily-loss limit, and a contract that closed while we were down is never recorded."""
+        summary = {"abandoned_paper": 0, "settled": 0, "resumed": 0, "unknown": 0}
+        with db.connect() as conn:
+            rows = db.rows(conn, "SELECT * FROM trades WHERE status = 'open'")
+        for row in rows:
+            if row["mode"] == "paper":
+                # Paper positions live only in memory, so an earlier process's paper trade cannot be resumed.
+                self._close_row(row["id"], "abandoned", "engine_restart")
+                summary["abandoned_paper"] += 1
+                continue
+            if row["mode"] != self.cfg.mode or self.broker is None:
+                continue  # another account kind: reconciled when the engine runs in that mode
+            if not row["contract_id"]:
+                self._close_row(row["id"], "unknown", "no_contract_id")
+                summary["unknown"] += 1
+                events.publish("trade.tracking_error", {"id": row["id"], "error": "open trade without a contract id"},
+                               level="error", message=f"Trade {row['id']} has no broker contract: check Deriv")
+                continue
+            pos = Position(row["id"], row["symbol"], row["direction"], row["entry_price"], row["stop_price"],
+                           row["target_price"], row["risk_amount"] or self.cfg.risk_amount, 0, None,
+                           contract_id=row["contract_id"], mode=row["mode"])
+            st = self.states.get(row["symbol"]) or SymbolState(row["symbol"])
+            try:
+                msg = await self.broker.request({"proposal_open_contract": 1, "contract_id": int(row["contract_id"])})
+            except (DerivError, ValueError) as exc:
+                events.publish("trade.tracking_error", {"id": row["id"], "error": str(exc)}, level="error",
+                               message=f"Could not check contract {row['contract_id']}: check Deriv")
+                continue
+            poc = msg.get("proposal_open_contract") or {}
+            if poc.get("is_sold") or poc.get("status") in {"sold", "won", "lost"}:
+                profit = float(poc.get("profit") or 0.0)
+                exit_px = float(poc["exit_tick"]) if poc.get("exit_tick") else None
+                await self._finish(st, pos, exit_px, profit / pos.risk_amount if pos.risk_amount else 0.0,
+                                   round(profit, 2), f"{poc.get('status') or 'sold'} (while offline)")
+                summary["settled"] += 1
+            elif st.position is None:
+                st.position = pos
+                asyncio.create_task(self._track_contract(st, pos))
+                summary["resumed"] += 1
+        if any(summary.values()):
+            events.publish("engine.reconciled", summary, message=f"Reconciled open trades: {summary}")
+        return summary
+
+    @staticmethod
+    def _close_row(trade_id: str, status: str, reason: str) -> None:
+        with db.connect() as conn:
+            conn.execute("UPDATE trades SET status=?, closed_at=?, "
+                         "meta_json=json_set(COALESCE(meta_json,'{}'), '$.exit_reason', ?) WHERE id=?",
+                         (status, db.utc_now(), reason, trade_id))
 
     async def stop(self, reason: str = "stopped") -> dict:
         for t in self.tasks:
@@ -371,13 +431,16 @@ class LiveEngine:
             meta.update(order)
             asyncio.create_task(self._track_contract(st, pos))
         st.position = pos
+        # Money lost if this trade stops out: the stop-loss amount on multipliers, the whole stake on Rise/Fall.
+        at_risk = (meta.get("stake") if self.schema.execution.contract.type == "rise_fall" and meta.get("stake")
+                   else cfg.risk_amount)
         with db.connect() as conn:
             conn.execute("INSERT INTO trades(id, mode, symbol, direction, contract_type, stake, entry_price, "
-                         "stop_price, target_price, status, opened_at, contract_id, signal_id, strategy_id, meta_json) "
-                         "VALUES (?,?,?,?,?,?,?,?,?, 'open', ?,?,?,?,?)",
+                         "stop_price, target_price, status, opened_at, contract_id, signal_id, strategy_id, meta_json, "
+                         "risk_amount) VALUES (?,?,?,?,?,?,?,?,?, 'open', ?,?,?,?,?,?)",
                          (trade_id, cfg.mode, st.symbol, pos.direction, self.schema.execution.contract.type,
                           meta.get("stake"), pos.entry, pos.stop, pos.target, db.utc_now(), pos.contract_id,
-                          p.signal_id, self.schema.id, db.dumps(meta)))
+                          p.signal_id, self.schema.id, db.dumps(meta), at_risk))
         events.publish("trade.opened", {"id": trade_id, "mode": cfg.mode, "symbol": st.symbol,
                                         "direction": pos.direction, "entry": pos.entry, "stop": pos.stop,
                                         "target": pos.target, "contract_id": pos.contract_id},

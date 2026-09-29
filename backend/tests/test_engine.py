@@ -107,7 +107,7 @@ def test_tradingview_webhook_requires_secret_and_dedupes(client, monkeypatch):
     assert client.post("/api/webhooks/tradingview", json=body).status_code == 401
     body["secret"] = "s3cret"
     first = client.post("/api/webhooks/tradingview", json=body).json()
-    assert first["status"] == "accepted" and first["symbol"] == "frxEURUSD" and first["engine_rechecked"] is False
+    assert first["status"] == "accepted" and first["symbol"] == "frxEURUSD" and first["engine_watching"] is False
     assert client.post("/api/webhooks/tradingview", json=body).json()["status"] == "duplicate"
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -127,16 +128,23 @@ def _calendar_provider(requested: str | None) -> str:
 
 
 def _store_events(items: list[dict]) -> None:
+    """Upsert calendar rows. `first_seen_at` is set once and never changed.
+
+    Point-in-time note: the news filter uses only the scheduled time and importance, which are
+    published days ahead, so reading this table in a backtest does not leak the future. `actual`
+    (the released number) IS later information and must never feed a historical decision."""
     if not items:
         return
+    now = int(time.time())
     with db.connect() as conn, db.tx(conn):
         conn.executemany(
-            "INSERT INTO econ_events(ts, currency, title, importance, source, actual, forecast, previous) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ts, currency, title) DO UPDATE SET "
+            "INSERT INTO econ_events(ts, currency, title, importance, source, actual, forecast, previous, "
+            "first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ts, currency, title) DO UPDATE SET "
             "importance=excluded.importance, actual=COALESCE(excluded.actual, econ_events.actual), "
-            "forecast=excluded.forecast, previous=excluded.previous",
+            "forecast=excluded.forecast, previous=excluded.previous, "
+            "first_seen_at=COALESCE(econ_events.first_seen_at, excluded.first_seen_at)",
             [(e["ts"], e["currency"], e["title"], e["importance"], e["source"], e.get("actual"), e.get("forecast"),
-              e.get("previous")) for e in items])
+              e.get("previous"), now) for e in items])
 
 
 def _forexfactory() -> list[dict]:

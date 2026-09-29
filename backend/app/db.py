@@ -98,6 +98,12 @@ MIGRATIONS: list[str] = [
     ) WITHOUT ROWID;
     CREATE INDEX idx_econ_currency_ts ON econ_events(currency, ts);
     """,
+    # 3 — hardening: money at risk per trade (daily-loss limit), and when a calendar row was first seen
+    """
+    ALTER TABLE trades ADD COLUMN risk_amount REAL;
+    ALTER TABLE econ_events ADD COLUMN first_seen_at INTEGER;
+    CREATE INDEX idx_trades_status ON trades(status, mode)
+    """,
 ]
 
 

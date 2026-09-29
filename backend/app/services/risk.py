@@ -6,14 +6,20 @@ Real money additionally requires ALL of:
   1. COMMUNITY_ALLOW_REAL_TRADING=true, hand-edited into .env (the API cannot set it);
   2. a per-process arm via `arm_real()` (UI confirmation), cleared on restart;
   3. passing the same limits as demo.
+
+The kill switch is stored in the database, so a restart never silently releases it (fail-closed).
+The daily loss limit counts realised losses plus the risk still open at the stops, plus the new
+order's own risk, on the ICT/New York trading day (rolls at 17:00 New York).
 """
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app import config, db, events
+from app.services.ict import features as F
 
 DEFAULTS = {
     "max_stake": 100.0,          # per order, account currency (multipliers need stake ≫ risk on tight stops)
@@ -24,8 +30,8 @@ DEFAULTS = {
 }
 
 _state_lock = threading.Lock()
-_kill_switch = False
-_real_armed = False
+_real_armed = False  # deliberately per-process: arming real money must be repeated after every restart
+KILL_KEY = "risk_kill_switch"
 
 
 class RiskBlocked(PermissionError):
@@ -61,14 +67,13 @@ def set_limits(values: dict) -> dict:
 
 
 def kill_switch_active() -> bool:
-    return _kill_switch
+    return bool((db.kv_get(KILL_KEY) or {}).get("active"))
 
 
 def set_kill_switch(active: bool) -> None:
-    global _kill_switch
     with _state_lock:
-        _kill_switch = bool(active)
-    events.publish("risk.kill_switch", {"active": _kill_switch}, level="warning" if active else "info",
+        db.kv_set(KILL_KEY, {"active": bool(active), "at": db.utc_now()})
+    events.publish("risk.kill_switch", {"active": bool(active)}, level="warning" if active else "info",
                    message="Kill switch ENGAGED" if active else "Kill switch released")
 
 
@@ -98,23 +103,50 @@ def disarm_real() -> dict:
     return real_trading_status()
 
 
-def _today_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def _epoch(iso: str) -> int:
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+
+
+def trading_day(epoch: float | None = None) -> str:
+    """The ICT/New York trading day (17:00 New York rollover), the day every limit resets on."""
+    return F.ny_trading_day(int(epoch if epoch is not None else datetime.now(timezone.utc).timestamp()))
 
 
 def today_stats() -> dict:
-    day = _today_utc()
+    day = trading_day()
+    since = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 2 * 86400, timezone.utc)
     with db.connect() as conn:
-        r = db.row(conn, """
-            SELECT COALESCE(SUM(CASE WHEN pnl < 0 THEN -pnl ELSE 0 END), 0) AS realised_loss,
-                   COALESCE(SUM(pnl), 0) AS realised_pnl,
-                   COUNT(*) AS orders,
-                   SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_now
-            FROM trades WHERE mode IN ('demo', 'real') AND substr(opened_at, 1, 10) = ?""", (day,))
-        open_total = db.row(conn, "SELECT COUNT(*) AS n FROM trades WHERE mode IN ('demo','real') "
-                                  "AND status = 'open'")["n"]
-    return {"day": day, "realised_loss": round(r["realised_loss"], 2), "realised_pnl": round(r["realised_pnl"], 2),
-            "orders": r["orders"], "open": open_total}
+        recent = db.rows(conn, "SELECT pnl, opened_at FROM trades WHERE mode IN ('demo', 'real') AND opened_at >= ?",
+                         (since.isoformat(timespec="seconds").replace("+00:00", "Z"),))
+        open_rows = db.rows(conn, "SELECT stake, risk_amount FROM trades WHERE mode IN ('demo', 'real') "
+                                  "AND status = 'open'")
+    todays = [r for r in recent if trading_day(_epoch(r["opened_at"])) == day]
+    loss = sum(-r["pnl"] for r in todays if r["pnl"] is not None and r["pnl"] < 0)
+    pnl = sum(r["pnl"] for r in todays if r["pnl"] is not None)
+    # An open trade can still lose its full risk; without a recorded risk, assume the whole stake.
+    open_risk = sum(r["risk_amount"] if r["risk_amount"] is not None else (r["stake"] or 0.0) for r in open_rows)
+    return {"day": day, "realised_loss": round(loss, 2), "realised_pnl": round(pnl, 2), "orders": len(todays),
+            "open": len(open_rows), "open_risk": round(open_risk, 2)}
+
+
+def size_for_risk(risk_budget: float, entry: float, stop: float, value_per_point: float, size_step: float,
+                  min_size: float, tolerance: float = 1.05) -> tuple[float, float]:
+    """Position size so that a stop-out loses at most `risk_budget` (account currency).
+
+    Returns (size, risk at the stop). Rounds DOWN to the broker's size step, and refuses when even the
+    minimum size would lose more than `tolerance` x the budget, instead of silently risking more."""
+    distance = abs(entry - stop)
+    if distance <= 0 or value_per_point <= 0 or size_step <= 0:
+        raise RiskBlocked("Cannot size: stop distance, point value and size step must be positive.")
+    size = math.floor(risk_budget / (distance * value_per_point) / size_step + 1e-9) * size_step
+    if size < min_size:
+        min_risk = min_size * distance * value_per_point
+        if min_risk > risk_budget * tolerance:
+            raise RiskBlocked(f"Minimum size {min_size} would risk {min_risk:.2f} at the stop, above the "
+                              f"{risk_budget:.2f} budget. Raise the budget or skip this trade.")
+        size = min_size
+    size = round(size, 10)
+    return size, round(size * distance * value_per_point, 4)
 
 
 def check_order(intent: OrderIntent) -> None:
@@ -124,7 +156,7 @@ def check_order(intent: OrderIntent) -> None:
                        level="warning", message=f"Order blocked: {reason}")
         raise RiskBlocked(reason)
 
-    if _kill_switch:
+    if kill_switch_active():
         block("Kill switch is engaged.")
     if intent.is_virtual is not True:
         status = real_trading_status()
@@ -141,6 +173,10 @@ def check_order(intent: OrderIntent) -> None:
     stats = today_stats()
     if stats["realised_loss"] >= lim["max_daily_loss"]:
         block(f"Daily loss limit reached ({stats['realised_loss']} ≥ {lim['max_daily_loss']}).")
+    worst_case = stats["realised_loss"] + stats["open_risk"] + at_risk
+    if worst_case > lim["max_daily_loss"] + 1e-9:
+        block(f"If every open trade and this one stopped out, today's loss would be {worst_case:.2f}, above "
+              f"max_daily_loss {lim['max_daily_loss']}.")
     if stats["open"] >= lim["max_concurrent"]:
         block(f"Max concurrent trades reached ({stats['open']}).")
     if stats["orders"] >= lim["max_orders_per_day"]:

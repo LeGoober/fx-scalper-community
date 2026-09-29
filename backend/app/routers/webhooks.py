@@ -3,8 +3,8 @@
 An alert never places a trade by itself. The receiver:
   1. checks the shared secret (constant-time), then drops duplicate alert ids;
   2. maps the TradingView ticker to a Deriv symbol;
-  3. logs it, and if the engine runs that symbol, asks it to re-evaluate NOW on fresh
-     Deriv data. The strategy nodes and the risk gate still decide.
+  3. records it as an event (an untrusted observation). The engine's own scan on closed bars,
+     the strategy nodes and the risk gate decide; an alert cannot trigger or bypass them.
 So a forged, replayed or stale alert cannot open a position.
 
 TradingView can only reach a public URL (a tunnel such as cloudflared is needed for
@@ -64,7 +64,4 @@ async def tradingview(alert: TradingViewAlert, request: Request) -> dict:
     watching = bool(symbol) and status["running"] and any(s["symbol"] == symbol for s in status["symbols"])
     events.publish("webhook.tradingview", payload | {"engine_watching": watching},
                    message=f"TradingView {alert.event} {alert.ticker} → {symbol or 'unmapped'}")
-    if watching:
-        st = engine.ENGINE.states.get(symbol)
-        await engine.ENGINE._evaluate(st)  # re-validate on fresh Deriv data; nodes + risk gate decide
-    return {"status": "accepted", "symbol": symbol, "engine_rechecked": watching}
+    return {"status": "accepted", "symbol": symbol, "engine_watching": watching}
