@@ -71,6 +71,31 @@ Always visible in the header: feed status, engine state, the **DEMO** / **⚠ RE
 
 **Disarm** or **KILL** stops real trading at once. The app can never switch the `.env` setting itself.
 
+### Automatic trading on Capital.com (the Desk page)
+
+Capital.com is the execution venue that TradingView can display. TradingView has no order API, so
+the system places orders through Capital.com's API; when you log in to the same Capital.com account in
+TradingView's **Trading Panel**, every order and position appears on your chart.
+
+1. **Settings → API keys → Capital**: API key, login email and the API key's password. Create the key
+   on the Capital.com **demo** account (2FA required).
+2. **Desk → Connect demo** to verify the keys.
+3. **Trading → Engine**: mode **demo**, broker **capital.com**, then **▶ Start**. Accepted setups
+   become *proposals*; each one is decided once and kept with its evidence.
+4. **Desk → master switch**:
+
+| Master | What happens |
+|---|---|
+| **OFF** | No automatic orders. Switching to OFF also cancels working orders and closes automated positions (two clicks when anything is open). |
+| **PAUSE** | No new orders; whatever is open keeps its broker-side stop and target. |
+| **ON** | Accepted setups are placed as broker-side limit orders with stop and target, sized so a stop-out loses your risk amount (the spread counted as risk too), inside every limit. |
+
+Each open trade has its own **OFF** button (cancel the order, or close the position). Click any decision
+to open its dossier: the plan, every rule check, the sizing, the exact request sent to the broker and
+its reply, and the result. The master switch never bypasses the real-money lock or the kill switch.
+Signals are still computed on Deriv's price feed, so each plan is shifted by the price gap between the
+two feeds, and refused when that gap exceeds `max_basis_r` (a quarter of the risk by default).
+
 ## 5. A trading day (South African time)
 
 The strategy only trades the **New York morning window: 13:00 to 16:00 SAST** (14:00 to 17:00 after
