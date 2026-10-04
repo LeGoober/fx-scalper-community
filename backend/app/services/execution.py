@@ -35,10 +35,17 @@ BrokerFactory = Callable[[str, AccountKind], Broker]
 
 
 def _default_factory(name: str, kind: AccountKind) -> Broker:
+    if name == "ctrader":
+        from app.services.brokers.ctrader import CTraderBroker
+        return CTraderBroker(kind)
     if name == "capital":
         from app.services.brokers.capital import CapitalBroker
         return CapitalBroker(kind)
     raise BrokerError(f"No execution adapter for broker '{name}'. Deriv orders still run inside the engine.")
+
+
+def _coid(t: dict) -> str | None:
+    return ((db.loads(t.get("meta_json"), {}) or {}).get("client_order_id") or "")[:50] or None
 
 
 def _age_s(t: dict) -> float:
@@ -256,9 +263,11 @@ class ExecutionService:
             working_ids = {w.deal_id for w in working}
             pos_by_id = {p.deal_id: p for p in positions}
             for t in trades:
-                side = "buy" if t["direction"] == "long" else "sell"
-                match = next((p for p in free_pos if p.symbol == t["symbol"] and p.side == side
-                              and abs(p.size - (t["size"] or 0)) < 1e-9), None)
+                side, coid = "buy" if t["direction"] == "long" else "sell", _coid(t)
+                # Exact match on our client order id when the venue carries it (cTrader label), else by shape.
+                match = next((p for p in free_pos if coid and p.client_order_id == coid), None) or next(
+                    (p for p in free_pos if p.symbol == t["symbol"] and p.side == side and not p.client_order_id
+                     and abs(p.size - (t["size"] or 0)) < 1e-9), None)
                 if t["status"] == "working" and t["deal_id"] not in working_ids:
                     if match:  # the limit filled: the position carries a new deal id
                         free_pos.remove(match)
@@ -272,8 +281,9 @@ class ExecutionService:
                     self._settle(t, "closed", exit_px, why, estimated=True)
                     summary["closed"] += 1
                 elif t["status"] in {"unknown", "submitting"} and _age_s(t) >= SETTLE_AFTER_S:
-                    linked = next((w for w in working if w.symbol == t["symbol"] and w.side == side
-                                   and abs(w.size - (t["size"] or 0)) < 1e-9 and w.deal_id not in owned), None)
+                    linked = next((w for w in working if coid and w.client_order_id == coid), None) or next(
+                        (w for w in working if w.symbol == t["symbol"] and w.side == side and not w.client_order_id
+                         and abs(w.size - (t["size"] or 0)) < 1e-9 and w.deal_id not in owned), None)
                     if linked:
                         self._link(t, "working", linked.deal_id)
                         summary["linked"] += 1
@@ -312,6 +322,13 @@ class ExecutionService:
             acts = await b.activity(t["deal_id"], last_seconds=86400)
         except BrokerError:
             acts = []
+        priced = [a for a in acts if a.get("price") is not None]
+        if priced:  # the venue reports the real exit (cTrader closing deal): use it, and name the nearer level
+            px = float(priced[-1]["price"])
+            stop, target = t.get("stop_price"), t.get("target_price")
+            near = ("target" if target is not None and stop is not None and abs(px - target) < abs(px - stop)
+                    else "stop" if stop is not None else "exit")
+            return px, f"{near} (broker fill {px})"
         sources = {str(a.get("source")).upper() for a in acts}
         if "TP" in sources:
             return t["target_price"], "target (broker take-profit)"

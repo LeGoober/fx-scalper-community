@@ -79,7 +79,17 @@ async def _test_capital() -> dict:
         await broker.close()
 
 
+async def _test_ctrader() -> dict:
+    from app.services.brokers.ctrader import CTraderBroker
+    broker = CTraderBroker("demo")
+    try:
+        return {"ok": True, "detail": await broker.connect()}
+    finally:
+        await broker.close()
+
+
 TESTS = {"deriv_token": _test_deriv, "deriv_app_id": _test_deriv, "typesafe_api_key": _test_jev,
+         "ctrader_access_token": _test_ctrader, "ctrader_client_secret": _test_ctrader,
          "capital_api_key": _test_capital, "capital_identifier": _test_capital, "capital_api_password": _test_capital,
          "fmp_api_key": _test_openbb, "fred_api_key": _test_openbb, "tiingo_token": _test_openbb}
 

@@ -93,6 +93,7 @@ class BrokerPosition:
     tp_level: float | None
     opened_at: str | None = None
     upl: float | None = None
+    client_order_id: str | None = None   # our id, when the venue carries it (cTrader label)
 
 
 @dataclass
@@ -105,6 +106,7 @@ class WorkingOrder:
     stop_level: float | None = None
     tp_level: float | None = None
     good_till: str | None = None
+    client_order_id: str | None = None
 
 
 class Broker(Protocol):

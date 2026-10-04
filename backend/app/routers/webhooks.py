@@ -33,7 +33,7 @@ SOURCES_KEY = "tv_signal_sources"
 class SignalSource(BaseModel):
     """An alert name you allow to propose trades. Unregistered alerts are only recorded."""
     enabled: bool = True
-    broker: str = "capital"
+    broker: str = "ctrader"
     account_kind: str = Field("demo", pattern="^demo$", description="TradingView signals trade demo only for now")
     risk_amount: float = Field(1.0, gt=0)
     expires_in_minutes: int = Field(30, ge=1, le=1440)

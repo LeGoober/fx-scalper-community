@@ -35,6 +35,7 @@ from app.services.ict.scanner import Scanner
 log = logging.getLogger("fxs.engine")
 
 WARMUP_DAYS = 4
+API_VENUES = ("ctrader", "capital")  # orders placed through the decision pipeline + execution service
 MIN_STAKE = 1.0
 
 
@@ -46,8 +47,9 @@ class EngineConfig(BaseModel):
     evaluation: Literal["code", "jev", "laya", "ensemble"] = "code"
     risk_amount: float = Field(1.0, gt=0, description="Account currency lost at the planned stop (1R)")
     currency: str = "USD"
-    broker: Literal["deriv", "capital"] = Field(
-        "deriv", description="Where demo/real orders go. 'capital' = Capital.com (shows in TradingView), placed "
+    broker: Literal["deriv", "ctrader", "capital"] = Field(
+        "deriv", description="Where demo/real orders go. 'ctrader' = Deriv cTrader (the account TradingView's "
+                             "Deriv panel trades), 'capital' = Capital.com; both are placed "
                              "through the decision pipeline and gated by the master switch")
 
 
@@ -125,7 +127,7 @@ class LiveEngine:
                                "(Jev needs TYPESAFE_API_KEY; Laya needs `pip install laya`).")
         if cfg.mode in {"demo", "real"}:
             self._gate_orders(cfg)
-            currency = await (self._connect_capital(cfg) if cfg.broker == "capital" else self._connect_deriv(cfg))
+            currency = await (self._connect_venue(cfg) if cfg.broker in API_VENUES else self._connect_deriv(cfg))
             if currency:
                 self.cfg = cfg = cfg.model_copy(update={"currency": currency})
         self.states = {s: SymbolState(s) for s in cfg.symbols}
@@ -153,9 +155,9 @@ class LiveEngine:
             raise RuntimeError("Another backend process holds the trading lock; refusing to place orders "
                                "from two processes (duplicate orders). Stop the other one first.")
 
-    async def _connect_capital(self, cfg: EngineConfig) -> str | None:
+    async def _connect_venue(self, cfg: EngineConfig) -> str | None:
         from app.services import execution
-        venue = await execution.SERVICE.broker("capital", cfg.mode)  # verifies the account kind, fail-closed
+        venue = await execution.SERVICE.broker(cfg.broker, cfg.mode)  # verifies the account kind, fail-closed
         return venue.info().get("currency")
 
     async def _connect_deriv(self, cfg: EngineConfig) -> str | None:
@@ -270,11 +272,11 @@ class LiveEngine:
         }
 
     def _venue_info(self) -> dict | None:
-        if not self.cfg or self.cfg.broker != "capital":
+        if not self.cfg or self.cfg.broker not in API_VENUES:
             return None
         from app.services import execution
-        venue = next((b for b in execution.SERVICE.status()["brokers"] if b.get("broker") == "capital"), None)
-        return (venue or {}) | {"loginid": (venue or {}).get("account_id"), "broker": "capital"}
+        venue = next((b for b in execution.SERVICE.status()["brokers"] if b.get("broker") == self.cfg.broker), None)
+        return (venue or {}) | {"loginid": (venue or {}).get("account_id"), "broker": self.cfg.broker}
 
     # --------------------------------------------------------------- feed
     async def _run_symbol(self, symbol: str) -> None:
@@ -397,7 +399,7 @@ class LiveEngine:
         expires = S.entry_deadline(bars.t[-1] + self.schema.entry_granularity, ex, self.schema.entry_granularity)
         from app.services import notify
         self._notify(notify.notify_setup, st.symbol, decision["ticket"], expires)
-        if self.cfg.broker == "capital" and self.cfg.mode in {"demo", "real"}:
+        if self.cfg.broker in API_VENUES and self.cfg.mode in {"demo", "real"}:
             self._propose(st, ev, bars, signal_id, decision, expires, day)
             return
         st.pending.append(Pending(f"po-{uuid.uuid4().hex[:8]}", st.symbol, signal_id, ev.plan, expires, bars.t[-1]))
@@ -407,8 +409,9 @@ class LiveEngine:
         """Hand an accepted setup to the decision pipeline as a broker-side limit order (Capital.com)."""
         from app.services import decision
         with db.connect() as conn:
-            busy = conn.execute("SELECT COUNT(*) FROM trades WHERE broker = 'capital' AND symbol = ? AND status IN "
-                                "('submitting', 'working', 'open', 'unknown')", (st.symbol,)).fetchone()[0]
+            busy = conn.execute("SELECT COUNT(*) FROM trades WHERE broker = ? AND symbol = ? AND status IN "
+                                "('submitting', 'working', 'open', 'unknown')",
+                                (self.cfg.broker, st.symbol)).fetchone()[0]
         if busy:
             return  # one position per symbol, as in the backtest
         plan = ev.plan
@@ -419,7 +422,7 @@ class LiveEngine:
             strategy_id=self.schema.id, strategy_version=self.schema.version, signal_id=signal_id,
             evidence={"signal": evidence, "evaluation": self.cfg.evaluation, "reference_price": st.last_price})
         st.trades_today[day] = st.trades_today.get(day, 0) + 1
-        coro = decision.submit(p, broker="capital", account_kind=self.cfg.mode, risk_amount=self.cfg.risk_amount,
+        coro = decision.submit(p, broker=self.cfg.broker, account_kind=self.cfg.mode, risk_amount=self.cfg.risk_amount,
                                auto=True, reference_price=st.last_price)
         try:
             asyncio.get_running_loop().create_task(coro, name=f"decide:{st.symbol}")

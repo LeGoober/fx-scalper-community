@@ -131,6 +131,39 @@ def capital_api_password() -> str:
     return env("COMMUNITY_CAPITAL_API_PASSWORD")
 
 
+# cTrader Open API (Deriv cTrader: the account TradingView's Deriv panel trades) ----------
+CTRADER_HOSTS = {"demo": "wss://demo.ctraderapi.com:5036", "real": "wss://live.ctraderapi.com:5036"}
+
+
+def ctrader_url(kind: str) -> str:
+    return env(f"COMMUNITY_CTRADER_{'LIVE' if kind == 'real' else 'DEMO'}_URL",
+               CTRADER_HOSTS["real" if kind == "real" else "demo"])
+
+
+def ctrader_client_id() -> str:
+    return env("COMMUNITY_CTRADER_CLIENT_ID")
+
+
+def ctrader_client_secret() -> str:
+    return env("COMMUNITY_CTRADER_CLIENT_SECRET")
+
+
+def ctrader_access_token() -> str:
+    return env("COMMUNITY_CTRADER_ACCESS_TOKEN")
+
+
+def ctrader_refresh_token() -> str:
+    return env("COMMUNITY_CTRADER_REFRESH_TOKEN")
+
+
+def ctrader_account_id() -> str:
+    return env("COMMUNITY_CTRADER_ACCOUNT")
+
+
+def default_broker() -> str:
+    return env("COMMUNITY_DEFAULT_BROKER", "ctrader")
+
+
 # LLM agents (OpenAI-compatible; OpenRouter by default) ------------------------------------
 def llm_base_url() -> str:
     return env("COMMUNITY_LLM_BASE_URL", "https://openrouter.ai/api/v1")

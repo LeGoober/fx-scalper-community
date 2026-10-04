@@ -26,7 +26,7 @@ class ManualProposal(BaseModel):
     entry: float | None = Field(None, description="Limit price; omit for a market order")
     risk_amount: float = Field(1.0, gt=0)
     expires_in_minutes: int = Field(60, ge=1, le=1440)
-    broker: Literal["capital"] = "capital"
+    broker: Literal["ctrader", "capital"] = "ctrader"
 
 
 def _exposure() -> list[dict]:
@@ -85,15 +85,19 @@ def get_decision(decision_id: str) -> dict:
 @router.get("/api/desk/brokers", summary="Execution venues: configured, connected, account")
 def brokers() -> dict:
     from app import config
-    return {"capital": {"configured": bool(config.capital_api_key() and config.capital_identifier()
+    return {"ctrader": {"configured": bool(config.ctrader_client_id() and config.ctrader_client_secret()
+                                           and config.ctrader_access_token()),
+                        "app_set": bool(config.ctrader_client_id() and config.ctrader_client_secret())},
+            "capital": {"configured": bool(config.capital_api_key() and config.capital_identifier()
                                            and config.capital_api_password())},
+            "default": config.default_broker(),
             "connected": execution.SERVICE.status()["brokers"]}
 
 
-@router.post("/api/desk/brokers/capital/connect", summary="Connect the Capital.com DEMO account (verifies the keys)")
-async def connect_capital() -> dict:
+@router.post("/api/desk/brokers/{name}/connect", summary="Connect a venue's DEMO account (verifies the keys)")
+async def connect_venue(name: Literal["ctrader", "capital"]) -> dict:
     try:
-        b = await execution.SERVICE.broker("capital", "demo")
+        b = await execution.SERVICE.broker(name, "demo")
     except (BrokerError, risk.RiskBlocked) as exc:
         raise HTTPException(502, str(exc)) from exc
     return b.info()
