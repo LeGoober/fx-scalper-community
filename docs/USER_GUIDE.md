@@ -71,18 +71,28 @@ Always visible in the header: feed status, engine state, the **DEMO** / **⚠ RE
 
 **Disarm** or **KILL** stops real trading at once. The app can never switch the `.env` setting itself.
 
-### Automatic trading on Capital.com (the Desk page)
+### Automatic trading on Deriv cTrader (the Desk page)
 
-Capital.com is the execution venue that TradingView can display. TradingView has no order API, so
-the system places orders through Capital.com's API; when you log in to the same Capital.com account in
-TradingView's **Trading Panel**, every order and position appears on your chart.
+TradingView has no order API. Its **Deriv** trading panel trades a Deriv **cTrader** account, and the
+cTrader Open API (Spotware) can trade that same account from Python. So the system places orders through
+the cTrader Open API, and they appear on your TradingView chart when the panel is logged in to the same
+account. (Capital.com is also supported but is not available in South Africa.)
 
-1. **Settings → API keys → Capital**: API key, login email and the API key's password. Create the key
-   on the Capital.com **demo** account (2FA required).
-2. **Desk → Connect demo** to verify the keys.
-3. **Trading → Engine**: mode **demo**, broker **capital.com**, then **▶ Start**. Accepted setups
+1. **cTrader account**: in TradingView, open the Trading Panel → Deriv and log in; a Deriv cTrader
+   **demo** account is created for you if you don't have one. Note its account number.
+2. **Open API app**: go to openapi.ctrader.com, log in with your cTrader ID, create an application and
+   wait for it to be approved. In the app settings add the redirect URI shown on the Desk page
+   (`http://127.0.0.1:8080/api/ctrader/oauth/callback`).
+3. **Settings → API keys → Deriv cTrader**: the app's client ID and secret (and optionally your
+   cTrader account number).
+4. **Desk → Sign in with cTrader**: approve trading access; the tokens are stored write-only and
+   refreshed automatically. If cTrader won't accept the local redirect URI, use your app's
+   **Playground** on openapi.ctrader.com to get an access token (scope *trading*) and paste it,
+   with the refresh token, into Settings.
+5. **Desk → Connect demo** to verify; it must show your demo account and its balance.
+6. **Trading → Engine**: mode **demo**, broker **deriv ctrader**, then **▶ Start**. Accepted setups
    become *proposals*; each one is decided once and kept with its evidence.
-4. **Desk → master switch**:
+7. **Desk → master switch**:
 
 | Master | What happens |
 |---|---|
